@@ -1,0 +1,74 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: #222230 #0a0a0f;
+  }
+
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: #0a0a0f;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: #222230;
+    border-radius: 3px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: #333345;
+  }
+
+  html, body, #root {
+    height: 100%;
+    margin: 0;
+    overflow: hidden;
+  }
+
+  ::selection {
+    background: rgba(0, 255, 255, 0.3);
+    color: #fff;
+  }
+}
+
+@layer components {
+  .neon-text {
+    text-shadow: 0 0 7px currentColor, 0 0 10px currentColor, 0 0 21px currentColor;
+  }
+
+  .neon-border {
+    box-shadow: 0 0 5px currentColor, inset 0 0 5px currentColor;
+  }
+
+  .panel {
+    @apply bg-surface-800 border border-surface-600 rounded-lg;
+  }
+
+  .panel-header {
+    @apply px-3 py-2 border-b border-surface-600 text-xs font-semibold uppercase tracking-wider;
+  }
+
+  .btn {
+    @apply px-3 py-1.5 text-xs font-medium rounded border transition-all duration-150;
+  }
+
+  .btn-primary {
+    @apply btn border-neon-cyan text-neon-cyan hover:bg-neon-cyan/10 active:bg-neon-cyan/20;
+  }
+
+  .btn-secondary {
+    @apply btn border-surface-600 text-gray-300 hover:bg-surface-600 active:bg-surface-700;
+  }
+
+  .input {
+    @apply bg-surface-900 border border-surface-600 rounded px-2 py-1 text-xs text-gray-200
+           focus:outline-none focus:border-neon-cyan/50 transition-colors;
+  }
+}

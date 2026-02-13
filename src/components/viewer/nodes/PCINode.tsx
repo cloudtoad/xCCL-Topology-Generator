@@ -1,0 +1,44 @@
+import { useRef, useState } from 'react'
+import { Text, Edges } from '@react-three/drei'
+import type { Mesh } from 'three'
+import type { TopoNode } from '../../../engine/types'
+import { nodeColors } from '../../../utils/colors'
+
+interface PCINodeProps {
+  node: TopoNode
+  position: [number, number, number]
+}
+
+export function PCINode({ node, position }: PCINodeProps) {
+  const meshRef = useRef<Mesh>(null)
+  const [hovered, setHovered] = useState(false)
+
+  return (
+    <group position={position}>
+      <mesh
+        ref={meshRef}
+        onPointerOver={() => setHovered(true)}
+        onPointerOut={() => setHovered(false)}
+        rotation={[0, 0, Math.PI / 4]}
+      >
+        <boxGeometry args={[0.15, 0.15, 0.15]} />
+        <meshStandardMaterial
+          color="#0a0a0f"
+          emissive={nodeColors.PCI}
+          emissiveIntensity={hovered ? 0.15 : 0.05}
+        />
+        <Edges color={nodeColors.PCI} threshold={15} />
+      </mesh>
+      <Text
+        position={[0, 0.25, 0]}
+        fontSize={0.1}
+        color={nodeColors.PCI}
+        anchorX="center"
+        anchorY="bottom"
+        font={undefined}
+      >
+        {node.label ?? `PCI${node.index}`}
+      </Text>
+    </group>
+  )
+}
