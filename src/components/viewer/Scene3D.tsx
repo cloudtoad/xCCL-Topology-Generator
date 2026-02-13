@@ -55,7 +55,7 @@ export function Scene3D() {
 
       {showGrid && <Grid />}
 
-      {viewMode === 'physical' && <PhysicalView />}
+      {(viewMode === 'physical' || viewMode === 'paths') && <PhysicalView />}
       {viewMode === 'ring' && <RingView />}
       {viewMode === 'tree' && <TreeView />}
 

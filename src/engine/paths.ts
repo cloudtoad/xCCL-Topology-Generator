@@ -293,6 +293,127 @@ function spfaFromSource(
 }
 
 // =============================================================================
+// PXN optimization — mirrors paths.cc:725-749
+//
+// After SPFA, check if GPU→NIC paths can be improved by routing through an
+// NVLink-connected peer GPU that has a better direct path to the NIC.
+// Path: GPU_src → NVLink → GPU_local → PCI → NIC
+// =============================================================================
+
+function applyPxnPaths(
+  system: TopoSystem,
+  gpuNodes: TopoNode[],
+  nicNodes: TopoNode[],
+  env: EnvConfig,
+  log: DecisionLog,
+): void {
+  const pxnDisabled = getEnvInt(env, 'NCCL_PXN_DISABLE') !== 0
+  if (pxnDisabled) {
+    log.emit(
+      'computePaths',
+      'PXN optimization disabled',
+      'NCCL_PXN_DISABLE is set; GPU→NVLink→GPU→PCI→NIC proxy paths are forbidden',
+      'paths.cc:592',
+    )
+    return
+  }
+
+  if (gpuNodes.length === 0 || nicNodes.length === 0) return
+
+  let pxnCount = 0
+
+  for (const nic of nicNodes) {
+    // Find the "local GPU" for this NIC: the GPU with the best direct path
+    // (lowest path type, highest BW). Mirrors ncclTopoGetLocalGpu.
+    let localGpu: TopoNode | null = null
+    let localType = PathType.DIS
+    let localBw = 0
+
+    for (const gpu of gpuNodes) {
+      const key = `${gpu.id}->${nic.id}`
+      const path = system.paths.get(key)
+      if (!path) continue
+      if (
+        path.type < localType ||
+        (path.type === localType && path.bandwidth > localBw)
+      ) {
+        localGpu = gpu
+        localType = path.type
+        localBw = path.bandwidth
+      }
+    }
+
+    if (!localGpu) continue
+
+    // For each other GPU, check if routing through localGpu is better
+    for (const gpu of gpuNodes) {
+      if (gpu.id === localGpu.id) continue
+
+      const gpuToNicKey = `${gpu.id}->${nic.id}`
+      const gpuToNicPath = system.paths.get(gpuToNicKey)
+      if (!gpuToNicPath) continue
+
+      // Condition 1: peer (localGpu) connected to NIC with PXB or better
+      const peerToNicKey = `${localGpu.id}->${nic.id}`
+      const peerToNicPath = system.paths.get(peerToNicKey)
+      if (!peerToNicPath || peerToNicPath.type > PathType.PXB) continue
+
+      // Condition 2: peer connected to this GPU through NVLink
+      const peerToGpuKey = `${localGpu.id}->${gpu.id}`
+      const peerToGpuPath = system.paths.get(peerToGpuKey)
+      if (!peerToGpuPath || peerToGpuPath.type > PathType.NVL) continue
+
+      // Condition 3: same node (always true for single-server)
+
+      // Condition 4: either better BW or current path avoids CPU
+      if (
+        peerToNicPath.bandwidth <= gpuToNicPath.bandwidth &&
+        gpuToNicPath.type <= PathType.PXN
+      ) {
+        continue
+      }
+
+      // Apply PXN: route GPU → (NVSwitch) → localGpu → PCI → NIC
+      // Use the real GPU→localGpu path hops (which include NVSwitch intermediates)
+      const gpuToPeerKey = `${gpu.id}->${localGpu.id}`
+      const gpuToPeerPath = system.paths.get(gpuToPeerKey)
+
+      const nvlinkHops = gpuToPeerPath?.hops ?? [{
+        linkType: LinkType.NVL,
+        bandwidth: peerToGpuPath.bandwidth,
+        nodeId: localGpu.id,
+      }]
+      const nvlinkHopCount = gpuToPeerPath?.count ?? 1
+
+      const pxnBw = Math.min(peerToGpuPath.bandwidth, peerToNicPath.bandwidth)
+
+      const pxnPath: TopoPath = {
+        fromId: gpu.id,
+        toId: nic.id,
+        type: PathType.PXN,
+        bandwidth: pxnBw,
+        hops: [...nvlinkHops, ...peerToNicPath.hops],
+        count: nvlinkHopCount + peerToNicPath.count,
+      }
+
+      system.paths.set(gpuToNicKey, pxnPath)
+      pxnCount++
+    }
+  }
+
+  if (pxnCount > 0) {
+    log.emit(
+      'computePaths',
+      `PXN optimization: upgraded ${pxnCount} GPU→NIC paths`,
+      'Routed through NVLink-connected peer GPUs for better NIC access',
+      'paths.cc:725',
+      [],
+      { pxnCount },
+    )
+  }
+}
+
+// =============================================================================
 // computeAllPaths — mirrors paths.cc ncclTopoComputePaths
 // =============================================================================
 
@@ -439,6 +560,9 @@ export function computeAllPaths(
       totalBw: system.totalBw,
     },
   )
+
+  // Step 5: Apply PXN optimization (paths.cc:725-749)
+  applyPxnPaths(system, gpuNodes, nicNodes, env, log)
 
   // Log a summary of GPU-GPU path types
   for (const srcGpu of gpuNodes) {

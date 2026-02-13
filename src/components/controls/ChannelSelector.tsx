@@ -4,22 +4,41 @@ import { useTopologyStore } from '../../store/topology-store'
 export function ChannelSelector() {
   const selectedChannel = useUIStore((s) => s.selectedChannel)
   const setSelectedChannel = useUIStore((s) => s.setSelectedChannel)
+  const viewMode = useUIStore((s) => s.viewMode)
   const ringGraph = useTopologyStore((s) => s.ringGraph)
+  const treeGraph = useTopologyStore((s) => s.treeGraph)
 
-  const nChannels = ringGraph?.nChannels ?? 0
+  const nChannels = (viewMode === 'tree' ? treeGraph?.nChannels : ringGraph?.nChannels) ?? 0
 
   if (nChannels === 0) {
     return (
       <div className="flex items-center gap-1">
         <span className="text-[10px] text-gray-600 uppercase">Ch</span>
-        <span className="text-[10px] text-gray-600">—</span>
+        <span className="text-[10px] text-gray-600">&mdash;</span>
       </div>
     )
+  }
+
+  const prev = () => {
+    if (selectedChannel === null || selectedChannel === 0) {
+      setSelectedChannel(nChannels - 1)
+    } else {
+      setSelectedChannel(selectedChannel - 1)
+    }
+  }
+
+  const next = () => {
+    if (selectedChannel === null || selectedChannel >= nChannels - 1) {
+      setSelectedChannel(0)
+    } else {
+      setSelectedChannel(selectedChannel + 1)
+    }
   }
 
   return (
     <div className="flex items-center gap-1">
       <span className="text-[10px] text-gray-500 mr-1 uppercase">Ch</span>
+      <button onClick={prev} className="btn-secondary text-[10px] px-1">&lsaquo;</button>
       <select
         value={selectedChannel ?? 'all'}
         onChange={(e) => {
@@ -35,6 +54,7 @@ export function ChannelSelector() {
           </option>
         ))}
       </select>
+      <button onClick={next} className="btn-secondary text-[10px] px-1">&rsaquo;</button>
     </div>
   )
 }

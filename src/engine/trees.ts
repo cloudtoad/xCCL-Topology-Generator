@@ -1,27 +1,34 @@
 // =============================================================================
-// Double Binary Tree Construction — mirrors trees.cc from NCCL source
+// Tree Construction — mirrors trees.cc / connect.cc from NCCL source
+//
+// For intra-node (single server): GPUs form a CHAIN following the ring order.
+// Each GPU's parent is the previous GPU in ring order, child is the next.
+// No branching — the "tree" within a node is always a linear pipeline.
+//
+// For inter-node (multi-server): ncclGetDtree builds a binary tree across
+// NODES, with intra-node chains feeding into/from the inter-node tree.
+// (Inter-node support to be added when cluster mode is implemented.)
+//
+// Channel doubling: each ring channel produces 2 tree channels:
+//   - Tree 0: forward chain (ring order as-is)
+//   - Tree 1: reverse chain (ring order reversed)
+// This ensures every rank is active in at least one direction.
 // =============================================================================
 
 import type { TopoGraph, GraphChannel } from './types'
-import { GraphPattern, LinkType } from './types'
+import { GraphPattern } from './types'
 import { DecisionLog } from './decision-log'
 
 // =============================================================================
 // ncclGetBtree — standard binary tree for nRanks ranks (trees.cc:18-86)
 //
-// For rank r in a tree of nRanks:
-//   parent = floor((r - 1) / 2),  or -1 if r == 0
-//   left child  = 2*r + 1,         or -1 if >= nRanks
-//   right child = 2*r + 2,         or -1 if >= nRanks
+// Used for INTER-NODE tree construction (one rank per node).
+// NOT used for intra-node — intra-node always uses chains.
 // =============================================================================
 function getBtree(
   nRanks: number,
   rank: number,
 ): { up: number; down0: number; down1: number } {
-  // trees.cc:23-86 — iterative binary tree construction
-  // The NCCL implementation computes bit masks, but the result is equivalent
-  // to a standard 0-indexed binary tree layout.
-
   let up = -1
   let down0 = -1
   let down1 = -1
@@ -30,19 +37,12 @@ function getBtree(
     return { up, down0, down1 }
   }
 
-  // trees.cc:26-40 — find the position of the rank in the tree
-  // NCCL uses a bitwise method: iterate from the highest bit down to determine
-  // parent and children. The resulting tree is the canonical implicit binary
-  // tree stored in array order: node i has children 2i+1 and 2i+2.
-
-  // Parent: (rank - 1) / 2, or -1 for the root (rank 0)
   if (rank === 0) {
     up = -1
   } else {
     up = Math.floor((rank - 1) / 2)
   }
 
-  // Children
   const leftChild = 2 * rank + 1
   const rightChild = 2 * rank + 2
 
@@ -55,13 +55,9 @@ function getBtree(
 // =============================================================================
 // ncclGetDtree — double binary tree (trees.cc:88-109)
 //
-// Tree 0: standard binary tree (getBtree)
-// Tree 1: depends on nRanks parity
-//   - If nRanks is even: mirror tree — use rank' = (nRanks - 1 - rank)
-//   - If nRanks is odd:  shift tree  — use rank' = (rank - 1 + nRanks) % nRanks
-//
-// The double tree ensures every rank has work in at least one tree,
-// improving overlap in reduce-scatter / all-gather operations.
+// Used for INTER-NODE tree construction only.
+// Tree 0: standard binary tree
+// Tree 1: mirror (even nRanks) or shift (odd nRanks) tree
 // =============================================================================
 export function ncclGetDtree(
   nRanks: number,
@@ -70,29 +66,21 @@ export function ncclGetDtree(
   tree0: { up: number; down0: number; down1: number }
   tree1: { up: number; down0: number; down1: number }
 } {
-  // Tree 0: standard binary tree (trees.cc:91)
   const tree0 = getBtree(nRanks, rank)
 
-  // Tree 1 (trees.cc:93-108)
   let tree1: { up: number; down0: number; down1: number }
 
   if (nRanks % 2 === 0) {
-    // Even nRanks: mirror tree — reverse the rank indices (trees.cc:94-100)
     const mirrorRank = nRanks - 1 - rank
     const mirrorResult = getBtree(nRanks, mirrorRank)
-
-    // Map the mirrored rank indices back to real ranks
     tree1 = {
       up: mirrorResult.up === -1 ? -1 : nRanks - 1 - mirrorResult.up,
       down0: mirrorResult.down0 === -1 ? -1 : nRanks - 1 - mirrorResult.down0,
       down1: mirrorResult.down1 === -1 ? -1 : nRanks - 1 - mirrorResult.down1,
     }
   } else {
-    // Odd nRanks: shift tree — rotate rank indices by 1 (trees.cc:101-108)
     const shiftRank = (rank - 1 + nRanks) % nRanks
     const shiftResult = getBtree(nRanks, shiftRank)
-
-    // Map the shifted rank indices back to real ranks
     tree1 = {
       up: shiftResult.up === -1 ? -1 : (shiftResult.up + 1) % nRanks,
       down0: shiftResult.down0 === -1 ? -1 : (shiftResult.down0 + 1) % nRanks,
@@ -104,12 +92,45 @@ export function ncclGetDtree(
 }
 
 // =============================================================================
+// buildChain — build a chain (linear tree) from a ring ordering
+//
+// For a ring order [A, B, C, D, ...]:
+//   A.up = -1 (root), A.down = [B]
+//   B.up = A,          B.down = [C]
+//   ...
+//   last.up = prev,    last.down = [] (tail/leaf)
+// =============================================================================
+function buildChain(order: string[]): {
+  treeLinks: { parentId: string; childId: string }[]
+  treeUp: Map<string, string>
+  treeDown: Map<string, string[]>
+} {
+  const treeLinks: { parentId: string; childId: string }[] = []
+  const treeUp = new Map<string, string>()
+  const treeDown = new Map<string, string[]>()
+
+  for (let i = 0; i < order.length; i++) {
+    const gpuId = order[i]
+
+    if (i > 0) {
+      treeUp.set(gpuId, order[i - 1])
+      treeLinks.push({ parentId: order[i - 1], childId: gpuId })
+    }
+
+    if (i < order.length - 1) {
+      treeDown.set(gpuId, [order[i + 1]])
+    }
+  }
+
+  return { treeLinks, treeUp, treeDown }
+}
+
+// =============================================================================
 // buildTreeGraph — construct a tree TopoGraph from a ring TopoGraph
 //
-// Uses ncclGetDtree to assign tree links for each channel.
-// Each ring channel produces one tree channel with two sub-trees (tree0, tree1).
-// The tree channels are later doubled in connect.ts (setupChannels) to produce
-// 2 tree channels per ring channel.
+// For single-node: builds chains following ring order (intra-node pattern).
+// Each ring channel → 1 tree channel (forward chain). The channel doubling
+// in connect.ts will add the reverse chain as the second tree channel.
 // =============================================================================
 export function buildTreeGraph(
   ringGraph: TopoGraph,
@@ -119,9 +140,9 @@ export function buildTreeGraph(
   log.emit(
     'treeSearch',
     `Building tree graph from ring graph with ${ringGraph.nChannels} channels`,
-    `Using ncclGetDtree for ${nRanks} ranks (double binary tree)`,
-    'trees.cc:88',
-    ['Single binary tree', 'Binomial tree'],
+    `Intra-node: chain following ring order for ${nRanks} ranks`,
+    'connect.cc:ncclTopoPreset',
+    ['Binary tree (inter-node only)', 'Binomial tree'],
     { nRanks, nChannels: ringGraph.nChannels },
   )
 
@@ -129,43 +150,7 @@ export function buildTreeGraph(
 
   for (let ch = 0; ch < ringGraph.nChannels; ch++) {
     const ringChannel = ringGraph.channels[ch]
-
-    // Build tree links using the GPU IDs from the ring ordering.
-    // In our model, rank index maps to GPU ID via the ring channel's ringOrder.
-    // For intra-node tree construction, we treat the ring order positions as ranks.
-    const treeLinks: { parentId: string; childId: string }[] = []
-    const treeUp = new Map<string, string>()
-    const treeDown = new Map<string, string[]>()
-
-    // Determine the mapping: for this channel, the GPUs are those in ringOrder.
-    // We use rank indices 0..nRanks-1 corresponding to gpu-0..gpu-(nRanks-1).
-    for (let rank = 0; rank < nRanks; rank++) {
-      const gpuId = `gpu-${rank}`
-      const { tree0 } = ncclGetDtree(nRanks, rank)
-
-      // Use tree0 for the primary tree structure of this channel.
-      // tree1 will be used when channels are doubled in connect.ts.
-      const downChildren: string[] = []
-
-      if (tree0.up !== -1) {
-        const parentId = `gpu-${tree0.up}`
-        treeLinks.push({ parentId, childId: gpuId })
-        treeUp.set(gpuId, parentId)
-      }
-
-      if (tree0.down0 !== -1) {
-        const childId = `gpu-${tree0.down0}`
-        downChildren.push(childId)
-      }
-      if (tree0.down1 !== -1) {
-        const childId = `gpu-${tree0.down1}`
-        downChildren.push(childId)
-      }
-
-      if (downChildren.length > 0) {
-        treeDown.set(gpuId, downChildren)
-      }
-    }
+    const { treeLinks, treeUp, treeDown } = buildChain(ringChannel.ringOrder)
 
     channels.push({
       id: ch,
@@ -190,9 +175,9 @@ export function buildTreeGraph(
 
   log.emit(
     'treeSearch',
-    `Tree graph built: ${treeGraph.nChannels} channels`,
-    `Each channel has tree links for ${nRanks} ranks using double binary tree`,
-    'trees.cc:109',
+    `Tree graph built: ${treeGraph.nChannels} channels (intra-node chains)`,
+    `Each channel is a linear chain of ${nRanks} GPUs following ring order`,
+    'connect.cc:ncclTopoPreset',
     [],
     {
       nChannels: treeGraph.nChannels,

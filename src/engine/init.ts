@@ -278,7 +278,7 @@ export function runInit(
   log.emit(
     'searchInit',
     `Tree construction result: ${treeGraph.nChannels} channels, speedIntra=${treeGraph.speedIntra}`,
-    `Tree built using ncclGetDtree for ${nGpus} GPUs`,
+    `Tree built as intra-node chains for ${nGpus} GPUs`,
     'init.cc:1092',
     [],
     { nChannels: treeGraph.nChannels, speedIntra: treeGraph.speedIntra },

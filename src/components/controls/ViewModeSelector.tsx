@@ -2,9 +2,9 @@ import { useUIStore, type ViewMode } from '../../store/ui-store'
 
 const viewModes: { value: ViewMode; label: string }[] = [
   { value: 'physical', label: 'Physical' },
+  { value: 'paths', label: 'Paths' },
   { value: 'ring', label: 'Ring' },
   { value: 'tree', label: 'Tree' },
-  { value: 'paths', label: 'Paths' },
 ]
 
 export function ViewModeSelector() {

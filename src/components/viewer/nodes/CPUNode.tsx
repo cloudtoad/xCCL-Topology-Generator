@@ -3,6 +3,7 @@ import { Text, Edges } from '@react-three/drei'
 import { DoubleSide } from 'three'
 import type { Mesh } from 'three'
 import type { TopoNode } from '../../../engine/types'
+import { useUIStore } from '../../../store/ui-store'
 import { nodeColors } from '../../../utils/colors'
 
 const DIM_COLOR = '#222233'
@@ -18,16 +19,19 @@ interface CPUNodeProps {
 export function CPUNode({ node, position, rotationY = 0, dimmed = false, onClick }: CPUNodeProps) {
   const meshRef = useRef<Mesh>(null)
   const [hovered, setHovered] = useState(false)
+  const selectNode = useUIStore((s) => s.selectNode)
+  const selectedNodes = useUIStore((s) => s.selectedNodes)
+  const isSelected = selectedNodes.includes(node.id)
 
   const color = dimmed ? DIM_COLOR : nodeColors.CPU
-  const intensity = dimmed ? 0.02 : hovered ? 0.15 : 0.05
+  const intensity = dimmed ? 0.02 : isSelected ? 0.3 : hovered ? 0.15 : 0.05
 
   return (
     <group position={position} rotation={[0, rotationY, 0]}>
       <mesh
         ref={meshRef}
         rotation={[-Math.PI / 2, 0, 0]}
-        onClick={(e) => { e.stopPropagation(); onClick?.() }}
+        onClick={(e) => { e.stopPropagation(); onClick?.(); selectNode(node.id) }}
         onPointerOver={() => setHovered(true)}
         onPointerOut={() => setHovered(false)}
       >

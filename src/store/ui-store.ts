@@ -47,7 +47,14 @@ export const useUIStore = create<UIState>((set, get) => ({
   showCPUs: false,
 
   setMode: (mode) => set({ mode }),
-  setViewMode: (viewMode) => set({ viewMode }),
+  setViewMode: (viewMode) => {
+    const updates: Partial<UIState> = { viewMode }
+    if (viewMode === 'paths') {
+      updates.infoPanel = 'info'
+      updates.selectedNodes = []
+    }
+    set(updates)
+  },
   setScaleView: (scaleView) => set({ scaleView, selectedServer: scaleView === 'cluster' ? get().selectedServer : 0 }),
   setSidePanel: (panel) => set({ sidePanel: panel }),
   setInfoPanel: (panel) => set({ infoPanel: panel }),

@@ -1,7 +1,9 @@
+import { useMemo } from 'react'
 import { useUIStore } from '../../store/ui-store'
 import { useTopologyStore } from '../../store/topology-store'
 import { pathColors } from '../../utils/colors'
-import { PathType } from '../../engine/types'
+import { PathType, LinkType, NodeType } from '../../engine/types'
+import type { TopoSystem } from '../../engine/types'
 
 const pathTypeNames: Record<number, string> = {
   [PathType.LOC]: 'LOC (Local)',
@@ -30,10 +32,48 @@ const pathTypeKeys: Record<number, keyof typeof pathColors> = {
   [PathType.NET]: 'NET',
 }
 
+// NOTE: C2C (3) and P2C (6) don't have entries here — they fall back to 'LOC' color.
+// This is acceptable since they're rare and share similar visual weight.
+
+/** Classify a single hop into its NCCL path type — mirrors classifyHop in paths.ts */
+function classifyHopType(
+  fromId: string,
+  toId: string,
+  linkType: LinkType,
+  system: TopoSystem,
+  nodeMap: Map<string, { type: NodeType }>,
+): { label: string; weight: number } {
+  const from = nodeMap.get(fromId)
+  const to = nodeMap.get(toId)
+  if (!from || !to) return { label: '?', weight: -1 }
+
+  if (linkType === LinkType.NVL) return { label: 'NVL', weight: PathType.NVL }
+  if (linkType === LinkType.C2C) return { label: 'C2C', weight: PathType.C2C }
+  if (linkType === LinkType.SYS) return { label: 'SYS', weight: PathType.SYS }
+  if (linkType === LinkType.NET) return { label: 'NET', weight: PathType.NET }
+
+  if (linkType === LinkType.PCI) {
+    if (from.type === NodeType.PCI && to.type === NodeType.PCI)
+      return { label: 'PXB', weight: PathType.PXB }
+    if (from.type === NodeType.CPU || to.type === NodeType.CPU)
+      return { label: 'PHB', weight: PathType.PHB }
+    return { label: 'PIX', weight: PathType.PIX }
+  }
+
+  return { label: 'LOC', weight: PathType.LOC }
+}
+
 export function PathInspector() {
   const selectedNodes = useUIStore((s) => s.selectedNodes)
   const clearSelection = useUIStore((s) => s.clearSelection)
   const system = useTopologyStore((s) => s.system)
+
+  const nodeMap = useMemo(() => {
+    if (!system) return new Map<string, { type: NodeType }>()
+    const map = new Map<string, { type: NodeType }>()
+    for (const n of system.nodes) map.set(n.id, { type: n.type })
+    return map
+  }, [system])
 
   if (selectedNodes.length < 2 || !system) {
     return (
@@ -87,7 +127,11 @@ export function PathInspector() {
             </span>
           </div>
           <div className="flex justify-between">
-            <span className="text-[10px] text-gray-500">Bandwidth</span>
+            <span className="text-[10px] text-gray-500">Weight</span>
+            <span className="text-[10px] text-gray-200">{path.type} <span className="text-gray-600">(lower = faster)</span></span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-[10px] text-gray-500">Bottleneck BW</span>
             <span className="text-[10px] text-gray-200">{path.bandwidth.toFixed(1)} GB/s</span>
           </div>
           <div className="flex justify-between">
@@ -99,16 +143,31 @@ export function PathInspector() {
         {path.hops.length > 0 && (
           <div className="mt-2 pt-2 border-t border-surface-600">
             <span className="text-[9px] text-gray-500 uppercase tracking-wider">Hop Details</span>
-            <div className="space-y-0.5 mt-1">
-              {path.hops.map((hop, i) => (
-                <div key={i} className="flex items-center gap-1 text-[9px]">
-                  <span className="text-gray-600 w-3">{i + 1}</span>
-                  <span className="text-gray-400">{hop.nodeId}</span>
-                  <span className="text-gray-600 flex-1 text-right">
-                    {hop.bandwidth.toFixed(1)} GB/s
-                  </span>
-                </div>
-              ))}
+            <div className="flex items-center gap-1 text-[8px] text-gray-600 mt-1 mb-0.5">
+              <span className="w-3">#</span>
+              <span className="flex-1">Node</span>
+              <span className="w-14 text-center">Type</span>
+              <span className="w-14 text-right">BW</span>
+            </div>
+            <div className="space-y-0.5">
+              {path.hops.map((hop, i) => {
+                const prevId = i === 0 ? path.fromId : path.hops[i - 1].nodeId
+                const cls = classifyHopType(prevId, hop.nodeId, hop.linkType, system, nodeMap)
+                const hopColorKey = pathTypeKeys[cls.weight]
+                const hopColor = hopColorKey ? pathColors[hopColorKey] : '#666'
+                return (
+                  <div key={i} className="flex items-center gap-1 text-[9px]">
+                    <span className="text-gray-600 w-3">{i + 1}</span>
+                    <span className="text-gray-400 flex-1">{hop.nodeId}</span>
+                    <span className="w-14 text-center font-mono" style={{ color: hopColor }}>
+                      {cls.label}<span className="text-gray-600">({cls.weight})</span>
+                    </span>
+                    <span className="text-gray-500 w-14 text-right">
+                      {hop.bandwidth.toFixed(1)} GB/s
+                    </span>
+                  </div>
+                )
+              })}
             </div>
           </div>
         )}

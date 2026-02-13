@@ -1,4 +1,10 @@
 import { useUIStore } from '../../store/ui-store'
+import { useTopologyStore } from '../../store/topology-store'
+import { useEnvStore } from '../../store/env-store'
+import { useDecisionStore } from '../../store/decision-store'
+import { computeAllPaths } from '../../engine/paths'
+import { DecisionLog } from '../../engine/decision-log'
+import { getEnvInt } from '../../engine/env'
 import { ModeToggle } from '../controls/ModeToggle'
 import { ViewModeSelector } from '../controls/ViewModeSelector'
 import { ChannelSelector } from '../controls/ChannelSelector'
@@ -13,6 +19,32 @@ export function Toolbar() {
   const selectedServer = useUIStore((s) => s.selectedServer)
   const showCPUs = useUIStore((s) => s.showCPUs)
   const toggleCPUs = useUIStore((s) => s.toggleCPUs)
+
+  const system = useTopologyStore((s) => s.system)
+  const setSystem = useTopologyStore((s) => s.setSystem)
+  const envConfig = useEnvStore((s) => s.config)
+  const setEnvVar = useEnvStore((s) => s.setVar)
+  const addEntries = useDecisionStore((s) => s.addEntries)
+
+  const pxnEnabled = getEnvInt(envConfig, 'NCCL_PXN_DISABLE') === 0
+
+  const handlePXNToggle = () => {
+    const newDisabled = pxnEnabled ? 1 : 0
+    setEnvVar('NCCL_PXN_DISABLE', newDisabled)
+
+    if (system) {
+      // Recompute paths with updated PXN setting
+      const updatedEnv = new Map(envConfig)
+      const v = updatedEnv.get('NCCL_PXN_DISABLE')
+      if (v) updatedEnv.set('NCCL_PXN_DISABLE', { ...v, value: newDisabled })
+
+      const log = new DecisionLog()
+      computeAllPaths(system, updatedEnv, log)
+      addEntries(log.getEntries())
+      // Force React re-render with new reference
+      setSystem({ ...system })
+    }
+  }
 
   return (
     <div className="h-11 flex-shrink-0 border-b border-surface-600 bg-surface-800 flex items-center px-3 gap-4">
@@ -69,6 +101,13 @@ export function Toolbar() {
           className={`btn-secondary text-[10px] ${showCPUs ? 'text-neon-cyan border-neon-cyan/30' : ''}`}
         >
           CPUs
+        </button>
+        <button
+          onClick={handlePXNToggle}
+          className={`btn-secondary text-[10px] ${pxnEnabled ? 'text-neon-cyan border-neon-cyan/30' : ''}`}
+          title="PXN: Route GPU→NIC traffic through NVLink-connected peer GPU"
+        >
+          PXN
         </button>
       </div>
 

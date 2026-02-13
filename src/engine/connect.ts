@@ -3,15 +3,43 @@
 //
 // Wires up ring and tree channels after search and tree construction.
 // Key operations:
-//   1. Double tree channels (each ring channel produces 2 tree channels)
-//   2. Set ring prev/next connections from ring ordering
-//   3. Set tree up/down connections from tree links
+//   1. Set ring prev/next connections from ring ordering
+//   2. Double tree channels: each ring channel → 2 tree channels
+//      - Tree 0 (even): forward chain (ring order as-is)
+//      - Tree 1 (odd):  reverse chain (ring order reversed)
 // =============================================================================
 
 import type { TopoSystem, TopoGraph, GraphChannel } from './types'
 import { GraphPattern } from './types'
-import { ncclGetDtree } from './trees'
 import { DecisionLog } from './decision-log'
+
+// =============================================================================
+// buildChain — build a chain (linear tree) from an ordered list of GPU IDs
+// =============================================================================
+function buildChain(order: string[]): {
+  treeLinks: { parentId: string; childId: string }[]
+  treeUp: Map<string, string>
+  treeDown: Map<string, string[]>
+} {
+  const treeLinks: { parentId: string; childId: string }[] = []
+  const treeUp = new Map<string, string>()
+  const treeDown = new Map<string, string[]>()
+
+  for (let i = 0; i < order.length; i++) {
+    const gpuId = order[i]
+
+    if (i > 0) {
+      treeUp.set(gpuId, order[i - 1])
+      treeLinks.push({ parentId: order[i - 1], childId: gpuId })
+    }
+
+    if (i < order.length - 1) {
+      treeDown.set(gpuId, [order[i + 1]])
+    }
+  }
+
+  return { treeLinks, treeUp, treeDown }
+}
 
 // =============================================================================
 // setupChannels — connect.cc main entry point
@@ -20,11 +48,10 @@ import { DecisionLog } from './decision-log'
 // and produces the final connected graphs ready for use.
 //
 // Ring channels: prev/next maps are finalized from ringOrder.
-// Tree channels: doubled (each ring channel -> 2 tree channels using tree0/tree1
-// from ncclGetDtree), with up/down maps populated.
+// Tree channels: doubled — forward chain + reverse chain per ring channel.
 // =============================================================================
 export function setupChannels(
-  system: TopoSystem,
+  _system: TopoSystem,
   ringGraph: TopoGraph,
   treeGraph: TopoGraph,
   log: DecisionLog,
@@ -61,7 +88,6 @@ export function setupChannels(
       prevMap.set(current, prevNode)
     }
 
-    // Attach prev/next to channel
     ;(channel as GraphChannel & {
       ringPrev?: Map<string, string>
       ringNext?: Map<string, string>
@@ -80,82 +106,46 @@ export function setupChannels(
   )
 
   // -------------------------------------------------------------------------
-  // 2. Double tree channels (connect.cc:620-650)
+  // 2. Double tree channels
   //
-  // NCCL creates 2 tree channels per ring channel:
-  //   - Tree channel 2*ch+0 uses tree0 from ncclGetDtree
-  //   - Tree channel 2*ch+1 uses tree1 from ncclGetDtree
+  // For intra-node (single server): each ring channel produces 2 tree channels:
+  //   - Tree 0 (even index): forward chain following ring order
+  //   - Tree 1 (odd index):  reverse chain (ring order reversed)
   //
-  // This doubles the tree parallelism and ensures every rank is a
-  // non-leaf in at least one tree (reducing idle time).
+  // This ensures every rank is active in at least one direction,
+  // improving overlap in reduce-scatter / all-gather operations.
   // -------------------------------------------------------------------------
   const nRanks = ringGraph.channels[0]?.ringOrder?.length ?? 0
   const doubledTreeChannels: GraphChannel[] = []
 
   for (let ch = 0; ch < treeGraph.nChannels; ch++) {
     const srcChannel = treeGraph.channels[ch]
+    const order = srcChannel.ringOrder
 
-    // Tree channel 2*ch+0: uses tree0
-    const tree0Links: { parentId: string; childId: string }[] = []
-    const tree0Up = new Map<string, string>()
-    const tree0Down = new Map<string, string[]>()
-
-    // Tree channel 2*ch+1: uses tree1
-    const tree1Links: { parentId: string; childId: string }[] = []
-    const tree1Up = new Map<string, string>()
-    const tree1Down = new Map<string, string[]>()
-
-    for (let rank = 0; rank < nRanks; rank++) {
-      const gpuId = `gpu-${rank}`
-      const { tree0, tree1 } = ncclGetDtree(nRanks, rank)
-
-      // --- Tree 0 ---
-      if (tree0.up !== -1) {
-        const parentId = `gpu-${tree0.up}`
-        tree0Links.push({ parentId, childId: gpuId })
-        tree0Up.set(gpuId, parentId)
-      }
-
-      const down0Children: string[] = []
-      if (tree0.down0 !== -1) down0Children.push(`gpu-${tree0.down0}`)
-      if (tree0.down1 !== -1) down0Children.push(`gpu-${tree0.down1}`)
-      if (down0Children.length > 0) tree0Down.set(gpuId, down0Children)
-
-      // --- Tree 1 ---
-      if (tree1.up !== -1) {
-        const parentId = `gpu-${tree1.up}`
-        tree1Links.push({ parentId, childId: gpuId })
-        tree1Up.set(gpuId, parentId)
-      }
-
-      const down1Children: string[] = []
-      if (tree1.down0 !== -1) down1Children.push(`gpu-${tree1.down0}`)
-      if (tree1.down1 !== -1) down1Children.push(`gpu-${tree1.down1}`)
-      if (down1Children.length > 0) tree1Down.set(gpuId, down1Children)
-    }
-
-    // Channel for tree0 (even index)
+    // Tree 0: forward chain (ring order as-is) — already built in buildTreeGraph
     doubledTreeChannels.push({
       id: 2 * ch,
       bandwidth: srcChannel.bandwidth,
-      ringOrder: srcChannel.ringOrder,
-      treeLinks: tree0Links,
-      treeUp: tree0Up,
-      treeDown: tree0Down,
+      ringOrder: order,
+      treeLinks: srcChannel.treeLinks,
+      treeUp: srcChannel.treeUp,
+      treeDown: srcChannel.treeDown,
     })
 
-    // Channel for tree1 (odd index)
+    // Tree 1: reverse chain
+    const revOrder = [...order].reverse()
+    const { treeLinks, treeUp, treeDown } = buildChain(revOrder)
+
     doubledTreeChannels.push({
       id: 2 * ch + 1,
       bandwidth: srcChannel.bandwidth,
-      ringOrder: srcChannel.ringOrder,
-      treeLinks: tree1Links,
-      treeUp: tree1Up,
-      treeDown: tree1Down,
+      ringOrder: order,
+      treeLinks,
+      treeUp,
+      treeDown,
     })
   }
 
-  // Build the final doubled tree graph
   const doubledTreeGraph: TopoGraph = {
     id: 'tree-doubled',
     pattern: GraphPattern.BALANCED_TREE,
@@ -170,7 +160,7 @@ export function setupChannels(
   log.emit(
     'channelSetup',
     `Tree channels doubled: ${treeGraph.nChannels} -> ${doubledTreeGraph.nChannels}`,
-    `Each ring channel produces 2 tree channels (tree0 + tree1 from ncclGetDtree)`,
+    `Each ring channel → 2 tree channels (forward chain + reverse chain)`,
     'connect.cc:650',
     [],
     {
@@ -180,9 +170,6 @@ export function setupChannels(
     },
   )
 
-  // -------------------------------------------------------------------------
-  // 3. Final summary log
-  // -------------------------------------------------------------------------
   log.emit(
     'channelSetup',
     'Channel setup complete',
