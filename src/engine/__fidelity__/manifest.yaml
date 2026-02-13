@@ -62,13 +62,14 @@ modules:
             ref_line: 67
             rule: "Bottleneck BW = min(path.bw, link.bw)"
           - id: intel-p2p-overhead
-            our_line: "237-252"
-            ref_line: 37
-            rule: "Intel CPU PHB path: PCI BW reduced by factor 6/5 (INTEL_P2P_OVERHEAD)"
+            our_file: src/engine/search.ts (effectiveCost, buildIntelOverheadPaths)
+            ref_line: "search.cc:79-91 (followPath)"
+            rule: "Intel P2P overhead applied during search bandwidth consumption, not in BFS"
+            status: FIXED
           - id: domination-check
-            our_lines: "260-269"
             ref_line: 73
-            rule: "New path dominates if: lower type, or same type with higher BW"
+            rule: "Replace if (existing.bw==0 || existing.count>path.count) && existing.bw<newBw — count+bw based, NOT pathType"
+            status: FIXED
 
       - name: applyPxnPaths
         our_lines: "303-414"

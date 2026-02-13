@@ -7,6 +7,8 @@ import {
   LinkType,
   PathType,
   GraphPattern,
+  CPUArch,
+  CPUVendor,
 } from './types'
 
 import type {
@@ -27,6 +29,7 @@ import {
   NCCL_TOPO_PATTERN_RING,
   NCCL_TOPO_PATTERN_BALANCED_TREE,
   compareGpuScores,
+  intelP2POverhead,
   type GpuScore,
 } from './constants/nccl'
 
@@ -50,6 +53,8 @@ interface SearchState {
   globalIterations: number
   /** Whether the search timed out */
   timedOut: boolean
+  /** Path keys that require Intel P2P overhead during bandwidth consumption (search.cc:79-91) */
+  intelOverheadPaths: Set<string>
 }
 
 /** Result from a single search attempt at a given speed */
@@ -245,7 +250,8 @@ function searchRingRec(
 
     const closeKey = pathKey(current.id, first.id)
     const closeRemaining = state.remainingBw.get(closeKey) ?? closePath.bandwidth
-    if (closeRemaining < requiredBw) return null
+    const closeCost = effectiveCost(closeKey, requiredBw, state)
+    if (closeRemaining < closeCost) return null
 
     return [...path]
   }
@@ -260,10 +266,11 @@ function searchRingRec(
     const p = getPath(system, current.id, gpu.id)
     if (!p) continue
 
-    // Check bandwidth availability
+    // Check bandwidth availability (with Intel P2P overhead if applicable)
     const key = pathKey(current.id, gpu.id)
     const remaining = state.remainingBw.get(key) ?? p.bandwidth
-    if (remaining < requiredBw) continue
+    const cost = effectiveCost(key, requiredBw, state)
+    if (remaining < cost) continue
 
     // If last GPU, also check closure path feasibility
     if (isLast) {
@@ -271,7 +278,8 @@ function searchRingRec(
       if (!closePath) continue
       const closeKey = pathKey(gpu.id, first.id)
       const closeRemaining = state.remainingBw.get(closeKey) ?? closePath.bandwidth
-      if (closeRemaining < requiredBw) continue
+      const lastCloseCost = effectiveCost(closeKey, requiredBw, state)
+      if (closeRemaining < lastCloseCost) continue
     }
 
     candidates.push(scoreGpu(system, current, gpu, first, isLast))
@@ -286,9 +294,10 @@ function searchRingRec(
     const fwdKey = pathKey(current.id, nextGpu.id)
     const fwdPath = getPath(system, current.id, nextGpu.id)!
 
-    // Consume bandwidth
+    // Consume bandwidth (with Intel P2P overhead if applicable)
     const prevBw = state.remainingBw.get(fwdKey) ?? fwdPath.bandwidth
-    state.remainingBw.set(fwdKey, prevBw - requiredBw)
+    const fwdCost = effectiveCost(fwdKey, requiredBw, state)
+    state.remainingBw.set(fwdKey, prevBw - fwdCost)
 
     visited.add(nextGpu.id)
     path.push(nextGpu.id)
@@ -443,7 +452,7 @@ function tryReusedRing(
   speed: number,
   state: SearchState,
 ): string[] | null {
-  // Verify all links still have enough bandwidth
+  // Verify all links still have enough bandwidth (with Intel P2P overhead)
   for (let i = 0; i < ring.length; i++) {
     const from = ring[i]
     const to = ring[(i + 1) % ring.length]
@@ -451,7 +460,8 @@ function tryReusedRing(
     if (!p) return null
     const key = pathKey(from, to)
     const remaining = state.remainingBw.get(key) ?? p.bandwidth
-    if (remaining < speed) return null
+    const cost = effectiveCost(key, speed, state)
+    if (remaining < cost) return null
   }
   return [...ring]
 }
@@ -472,7 +482,8 @@ function consumeRingBandwidth(
     if (!p) continue
     const key = pathKey(from, to)
     const prev = state.remainingBw.get(key) ?? p.bandwidth
-    state.remainingBw.set(key, prev - speed)
+    const cost = effectiveCost(key, speed, state)
+    state.remainingBw.set(key, prev - cost)
   }
 }
 
@@ -484,6 +495,47 @@ function initRemainingBw(state: SearchState, paths: Map<string, TopoPath>): void
   paths.forEach((path, key) => {
     state.remainingBw.set(key, path.bandwidth)
   })
+}
+
+/**
+ * Build a set of path keys that require Intel P2P overhead during bandwidth
+ * consumption. Mirrors NCCL's followPath (search.cc:79-91) which applies
+ * INTEL_P2P_OVERHEAD to PCI links when the path type is PHB, the start node
+ * is a GPU, and the path goes through an Intel x86 CPU.
+ */
+function buildIntelOverheadPaths(system: TopoSystem): Set<string> {
+  const overheadPaths = new Set<string>()
+  const nodeMap = new Map<string, TopoNode>()
+  for (const node of system.nodes) nodeMap.set(node.id, node)
+
+  system.paths.forEach((path, key) => {
+    if (path.type < PathType.PHB) return
+
+    const fromNode = nodeMap.get(path.fromId)
+    if (!fromNode || fromNode.type !== NodeType.GPU) return
+
+    for (const hop of path.hops) {
+      const node = nodeMap.get(hop.nodeId)
+      if (
+        node && node.type === NodeType.CPU &&
+        node.cpu?.arch === CPUArch.X86 &&
+        node.cpu?.vendor === CPUVendor.INTEL
+      ) {
+        overheadPaths.add(key)
+        break
+      }
+    }
+  })
+
+  return overheadPaths
+}
+
+/**
+ * Get the effective bandwidth cost for consuming a channel on a path.
+ * For Intel PHB paths from GPUs, the cost is bw*6/5 (search.cc:88).
+ */
+function effectiveCost(key: string, speed: number, state: SearchState): number {
+  return state.intelOverheadPaths.has(key) ? intelP2POverhead(speed) : speed
 }
 
 // =============================================================================
@@ -576,6 +628,12 @@ export function ncclTopoCompute(
   )
 
   // =========================================================================
+  // Pre-compute Intel P2P overhead paths (search.cc:79-91)
+  // =========================================================================
+
+  const intelOverheadPaths = buildIntelOverheadPaths(system)
+
+  // =========================================================================
   // Phase 1 — Find a solution (search.cc:1108-1190)
   // =========================================================================
 
@@ -610,6 +668,7 @@ export function ncclTopoCompute(
         iterations: 0,
         globalIterations,
         timedOut: false,
+        intelOverheadPaths,
       }
 
       // Initialize remaining bandwidth from system paths
@@ -792,6 +851,7 @@ export function ncclTopoCompute(
         iterations: 0,
         globalIterations,
         timedOut: false,
+        intelOverheadPaths,
       }
 
       // Initialize remaining bandwidth

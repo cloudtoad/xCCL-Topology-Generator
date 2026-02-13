@@ -1,20 +1,25 @@
-# Fidelity Report — 2026-02-12
+# Fidelity Report — 2026-02-12 (updated)
 
 ## Summary
 - Modules checked: 9
 - Functions compared: 18
 - Constants verified: 28
 - Env vars audited: 35
-- Divergences found: 12 (critical: 3, moderate: 6, minor: 3)
+- Divergences found: 9 (critical: 0, moderate: 6, minor: 3)
 - Missing features: 8
+- Fixed since baseline: 3 critical divergences resolved
 
-## Divergences
+## Fixed Divergences (previously critical)
+| Module | Item | Fix | Commit |
+|--------|------|-----|--------|
+| paths | domination check | Changed from pathType-based to count+bw based domination matching paths.cc:73. PathType now computed after domination check. | This commit |
+| paths | SPFA vs layered BFS | Replaced flat FIFO queue with layered BFS (currentLayer/nextLayer) matching NCCL's nodeList/nextNodeList alternation (paths.cc:52-110). | This commit |
+| paths | Intel P2P overhead | Removed from SPFA path computation. Now applied during search-phase bandwidth consumption via `effectiveCost()` in search.ts, matching NCCL's followPath (search.cc:79-91). | This commit |
+
+## Remaining Divergences
 | Module | Item | Ours | NCCL | Severity | Notes |
 |--------|------|------|------|----------|-------|
 | paths | classifyHop NVB check | Checks `fromNode.type==GPU && toNode.type==GPU` | Checks `node->type==GPU && path->type==PATH_NVL` (no toNode type guard) | Minor | NCCL does not guard on remNode being GPU for NVB classification; the NVL link type already implies GPU-GPU. Ours is stricter but functionally equivalent for valid topologies. |
-| paths | domination check | `newPathType > existing.pathType OR (same type AND newBw <= existing.bandwidth)` | `(remPath->bw==0 OR remPath->count > path->count) AND remPath->bw < bw` | Critical | NCCL uses a count+bw based domination (fewer hops OR higher bw); ours uses pathType+bw. NCCL does NOT use pathType in the BFS domination check at line 73 -- pathType is computed after the domination decision. Our SPFA relaxes based on pathType which can produce different path selections on non-trivial topologies. |
-| paths | SPFA vs layered BFS | Queue-based SPFA with pathType domination | Layered BFS (nodeList/nextNodeList) processing all nodes at same depth before advancing | Critical | NCCL processes layer-by-layer (all nodes at current depth, then next depth). Ours uses a flat queue. This can lead to different exploration order and different "best" paths when there are ties, since NCCL's layered approach implicitly prefers fewer hops. |
-| paths | Intel P2P overhead application | Applied during SPFA when crossing PCI link touching Intel CPU | Applied in `followPath` during search bandwidth consumption, NOT in path computation | Critical | In NCCL, `INTEL_P2P_OVERHEAD` is applied during the search phase when consuming bandwidth along a path (search.cc:80-91), not during BFS path computation. Our implementation applies it during SPFA, which bakes the reduced bandwidth into the stored path. This means our stored path.bw for Intel systems will be lower, potentially affecting search decisions. |
 | paths | PXN condition comparison | `peerToNicPath.bandwidth <= gpuToNicPath.bandwidth AND gpuToNicPath.type <= PathType.PXN` | `peerNode->paths[NET][n].bw > gpu->paths[NET][n].bw OR gpu->paths[NET][n].type > PATH_PXN` | Minor | Logically equivalent (De Morgan's law), just expressed differently. |
 | paths | PXN pxnType threshold | Always uses `PATH_PXB` | Uses `ncclParamPxnC2c() ? PATH_P2C : PATH_PXB` | Moderate | We always check against PXB. NCCL uses P2C when PXN_C2C is enabled (default=1), meaning on C2C systems our PXN is more restrictive. |
 | topo | interSocketBw Zhaoxin handling | Always returns `ZPI_BW` for Zhaoxin | Returns `YONGFENG_ZPI_BW` if model is Yongfeng, else `ZPI_BW` | Moderate | We don't distinguish the Yongfeng Zhaoxin model (9.0 GB/s vs 6.0 GB/s). |

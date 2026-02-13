@@ -14,13 +14,7 @@ import type {
   TopoPathHop,
 } from './types'
 import { NodeType, LinkType, PathType } from './types'
-import {
-  PCI_BW,
-  intelP2POverhead,
-  NCCL_TOPO_CPU_ARCH_X86,
-  NCCL_TOPO_CPU_VENDOR_INTEL,
-  NCCL_TOPO_CPU_VENDOR_AMD,
-} from './constants/nccl'
+import { LOC_BW } from './constants/nccl'
 import { DecisionLog } from './decision-log'
 import type { EnvConfig } from './env'
 import { getEnvInt } from './env'
@@ -163,11 +157,16 @@ interface SPFAEntry {
 }
 
 /**
- * Run SPFA from a single source node, computing shortest (best) paths to all
- * reachable nodes. "Best" means: lower PathType wins; ties broken by higher
- * bottleneck bandwidth.
+ * Run layered BFS from a single source node, computing shortest (best) paths
+ * to all reachable nodes.
  *
- * Mirrors the BFS loop in paths.cc ncclTopoComputePaths.
+ * Mirrors paths.cc ncclTopoSetPaths (lines 36-113):
+ *   - Layered BFS: processes all nodes at current depth before advancing
+ *     (nodeList/nextNodeList alternation, paths.cc:52-110)
+ *   - Domination check uses hop count + bandwidth, NOT pathType (paths.cc:73)
+ *   - PathType is computed after domination (paths.cc:91-101)
+ *   - Intel P2P overhead is NOT applied here — it's applied during the search
+ *     phase in followPath (search.cc:79-91)
  */
 function spfaFromSource(
   source: TopoNode,
@@ -178,115 +177,106 @@ function spfaFromSource(
 ): Map<string, SPFAEntry> {
   const best = new Map<string, SPFAEntry>()
 
-  // Initialize source
+  // Initialize source (paths.cc:48-50)
   const sourceEntry: SPFAEntry = {
     nodeId: source.id,
     pathType: PathType.LOC,
-    bandwidth: Infinity,
+    bandwidth: LOC_BW,
     hops: [],
     hopCount: 0,
   }
   best.set(source.id, sourceEntry)
 
-  // BFS/SPFA queue
-  const queue: string[] = [source.id]
+  // Layered BFS (paths.cc:52-110): process all nodes at current depth before
+  // advancing, matching NCCL's nodeList/nextNodeList alternation
+  let currentLayer: string[] = [source.id]
 
-  while (queue.length > 0) {
-    const currentId = queue.shift()!
-    const currentEntry = best.get(currentId)!
-    const currentNode = nodeMap.get(currentId)!
+  while (currentLayer.length > 0) {
+    const nextLayerSet = new Set<string>() // dedup (paths.cc:104-106)
+    const nextLayer: string[] = []
 
-    const neighbors = adj.get(currentId)
-    if (!neighbors) continue
+    for (const currentId of currentLayer) {
+      const currentEntry = best.get(currentId)!
+      const currentNode = nodeMap.get(currentId)!
 
-    for (const { link, neighbor } of neighbors) {
-      // GPU passthrough guard (paths.cc:69-71):
-      // When traversing through a GPU that is NOT the source, only allow if:
-      //   - NVB is not disabled
-      //   - Link is NVLink
-      //   - Remote (neighbor) is GPU
-      //   - Path count (hops so far) <= 1
-      if (
-        currentNode.type === NodeType.GPU &&
-        currentNode.id !== source.id
-      ) {
+      const neighbors = adj.get(currentId)
+      if (!neighbors) continue
+
+      for (const { link, neighbor } of neighbors) {
+        // GPU passthrough guard (paths.cc:69-71):
+        // When traversing through a GPU that is NOT the source, only allow if:
+        //   - NVB is not disabled
+        //   - Link is NVLink
+        //   - Remote (neighbor) is GPU
+        //   - Path count (hops so far) <= 1
         if (
-          nvbDisabled ||
-          link.type !== LinkType.NVL ||
-          neighbor.type !== NodeType.GPU ||
-          currentEntry.hopCount > 1
+          currentNode.type === NodeType.GPU &&
+          currentNode.id !== source.id
         ) {
-          continue
-        }
-      }
-
-      // Classify this hop
-      const newPathType = classifyHop(
-        currentNode,
-        neighbor,
-        link.type,
-        currentEntry.pathType,
-        currentEntry.hopCount + 1,
-      )
-
-      // Bottleneck bandwidth: minimum across all hops
-      let linkBw = link.bandwidth
-
-      // Intel P2P overhead (paths.cc:37): if path goes through Intel CPU
-      // via PHB and source is GPU, PCI bandwidth costs 6/5 more
-      if (
-        source.type === NodeType.GPU &&
-        newPathType >= PathType.PHB &&
-        link.type === LinkType.PCI &&
-        (currentNode.type === NodeType.CPU || neighbor.type === NodeType.CPU)
-      ) {
-        // Check if the CPU node has Intel vendor
-        const cpuNode =
-          currentNode.type === NodeType.CPU ? currentNode : neighbor
-        if (
-          cpuNode.cpu &&
-          cpuNode.cpu.arch === NCCL_TOPO_CPU_ARCH_X86 &&
-          cpuNode.cpu.vendor === NCCL_TOPO_CPU_VENDOR_INTEL
-        ) {
-          linkBw = linkBw / (6 / 5) // Effective BW is reduced by Intel overhead
-        }
-      }
-
-      const newBw = Math.min(currentEntry.bandwidth, linkBw)
-
-      // Check if this path is better than any existing path to neighbor
-      const existing = best.get(neighbor.id)
-
-      let dominated = false
-      if (existing) {
-        if (newPathType > existing.pathType) {
-          // Worse path type
-          dominated = true
-        } else if (newPathType === existing.pathType && newBw <= existing.bandwidth) {
-          // Same path type, no bandwidth improvement
-          dominated = true
-        }
-      }
-
-      if (!dominated) {
-        const newHop: TopoPathHop = {
-          linkType: link.type,
-          bandwidth: linkBw,
-          nodeId: neighbor.id,
+          if (
+            nvbDisabled ||
+            link.type !== LinkType.NVL ||
+            neighbor.type !== NodeType.GPU ||
+            currentEntry.hopCount > 1
+          ) {
+            continue
+          }
         }
 
-        const newEntry: SPFAEntry = {
-          nodeId: neighbor.id,
-          pathType: newPathType,
-          bandwidth: newBw,
-          hops: [...currentEntry.hops, newHop],
-          hopCount: currentEntry.hopCount + 1,
+        // Bottleneck bandwidth: min across all hops (paths.cc:67)
+        const newBw = Math.min(currentEntry.bandwidth, link.bandwidth)
+        const newCount = currentEntry.hopCount + 1
+
+        // Domination check (paths.cc:73):
+        // Replace existing path if:
+        //   (existing.bw == 0 || existing.count > current.count) && existing.bw < newBw
+        // This uses hop count + bandwidth, NOT pathType.
+        const existing = best.get(neighbor.id)
+
+        let dominated = false
+        if (existing) {
+          const dominated_cond =
+            (existing.bandwidth === 0 || existing.hopCount > currentEntry.hopCount) &&
+            existing.bandwidth < newBw
+          if (!dominated_cond) dominated = true
         }
 
-        best.set(neighbor.id, newEntry)
-        queue.push(neighbor.id)
+        if (!dominated) {
+          // Classify hop type AFTER domination check (paths.cc:91-101)
+          const newPathType = classifyHop(
+            currentNode,
+            neighbor,
+            link.type,
+            currentEntry.pathType,
+            newCount,
+          )
+
+          const newHop: TopoPathHop = {
+            linkType: link.type,
+            bandwidth: link.bandwidth,
+            nodeId: neighbor.id,
+          }
+
+          const newEntry: SPFAEntry = {
+            nodeId: neighbor.id,
+            pathType: newPathType,
+            bandwidth: newBw,
+            hops: [...currentEntry.hops, newHop],
+            hopCount: newCount,
+          }
+
+          best.set(neighbor.id, newEntry)
+
+          // Add to next layer if not already there (paths.cc:104-106)
+          if (!nextLayerSet.has(neighbor.id)) {
+            nextLayerSet.add(neighbor.id)
+            nextLayer.push(neighbor.id)
+          }
+        }
       }
     }
+
+    currentLayer = nextLayer
   }
 
   return best
@@ -488,12 +478,12 @@ export function computeAllPaths(
 
     for (const dest of destNodes) {
       if (dest.id === source.id) {
-        // Self-path: always LOC with infinite bandwidth
+        // Self-path: LOC with LOC_BW (paths.cc:49)
         const selfPath: TopoPath = {
           fromId: source.id,
           toId: dest.id,
           type: PathType.LOC,
-          bandwidth: Infinity,
+          bandwidth: LOC_BW,
           hops: [],
           count: 0,
         }
