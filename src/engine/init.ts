@@ -91,9 +91,51 @@ export function runInit(
     'init.cc:1030',
   )
 
-  const system = suConfig && suConfig.serverCount > 1
+  const isMultiNode = suConfig && suConfig.serverCount > 1
+  const system = isMultiNode
     ? createMultiNodeTopology(config, suConfig, env, log)
     : buildTopoSystem(config, env, log)
+
+  // -------------------------------------------------------------------------
+  // Multi-node fast path: skip expensive SPFA and search for visualization.
+  // Path computation is O(n²) on GPU count; 128 servers × 16 GPUs = 2048 GPUs
+  // would produce ~4M path entries. Instead, return the topology for rendering
+  // and defer per-server analysis to node view.
+  // -------------------------------------------------------------------------
+  if (isMultiNode) {
+    log.emit(
+      'searchInit',
+      `Multi-node fast path: skipping SPFA/search for ${suConfig.serverCount} servers`,
+      'Path computation and ring/tree search are deferred to per-server node view',
+      'init.ts',
+      [],
+      { serverCount: suConfig.serverCount, totalNodes: system.nodes.length, totalLinks: system.links.length },
+    )
+
+    // Build minimal empty graphs
+    const emptyRing: TopoGraph = {
+      id: 'ring-multi-deferred',
+      pattern: GraphPattern.RING,
+      nChannels: 0,
+      channels: [],
+      speedIntra: 0,
+      speedInter: 0,
+      typeIntra: 0 as any,
+      typeInter: 0 as any,
+    }
+    const emptyTree: TopoGraph = {
+      id: 'tree-multi-deferred',
+      pattern: GraphPattern.BALANCED_TREE,
+      nChannels: 0,
+      channels: [],
+      speedIntra: 0,
+      speedInter: 0,
+      typeIntra: 0 as any,
+      typeInter: 0 as any,
+    }
+
+    return { system, ringGraph: emptyRing, treeGraph: emptyTree, log }
+  }
 
   // -------------------------------------------------------------------------
   // Step 2: Compute paths — first pass (init.cc:1042)

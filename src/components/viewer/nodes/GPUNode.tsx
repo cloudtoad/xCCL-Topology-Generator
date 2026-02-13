@@ -1,16 +1,22 @@
 import { useRef, useState } from 'react'
 import { Text, Edges } from '@react-three/drei'
+import { DoubleSide } from 'three'
 import type { Mesh } from 'three'
 import type { TopoNode } from '../../../engine/types'
 import { useUIStore } from '../../../store/ui-store'
 import { nodeColors } from '../../../utils/colors'
 
+const DIM_COLOR = '#222233'
+
 interface GPUNodeProps {
   node: TopoNode
   position: [number, number, number]
+  rotationY?: number
+  dimmed?: boolean
+  onClick?: () => void
 }
 
-export function GPUNode({ node, position }: GPUNodeProps) {
+export function GPUNode({ node, position, rotationY = 0, dimmed = false, onClick }: GPUNodeProps) {
   const meshRef = useRef<Mesh>(null)
   const [hovered, setHovered] = useState(false)
   const selectNode = useUIStore((s) => s.selectNode)
@@ -18,27 +24,35 @@ export function GPUNode({ node, position }: GPUNodeProps) {
   const showLabels = useUIStore((s) => s.showLabels)
   const isSelected = selectedNodes.includes(node.id)
 
+  const color = dimmed ? DIM_COLOR : nodeColors.GPU
+  const intensity = dimmed ? 0.02 : isSelected ? 0.3 : hovered ? 0.15 : 0.05
+
   return (
-    <group position={position}>
+    <group position={position} rotation={[0, rotationY, 0]}>
       <mesh
         ref={meshRef}
-        onClick={() => selectNode(node.id)}
+        rotation={[-Math.PI / 2, 0, 0]}
+        onClick={(e) => { e.stopPropagation(); onClick?.(); selectNode(node.id) }}
         onPointerOver={() => setHovered(true)}
         onPointerOut={() => setHovered(false)}
       >
-        <boxGeometry args={[0.6, 0.4, 0.3]} />
+        <planeGeometry args={[0.5, 0.5]} />
         <meshStandardMaterial
           color="#0a0a0f"
-          emissive={nodeColors.GPU}
-          emissiveIntensity={isSelected ? 0.3 : hovered ? 0.15 : 0.05}
+          emissive={color}
+          emissiveIntensity={intensity}
+          side={DoubleSide}
+          polygonOffset
+          polygonOffsetFactor={1}
+          polygonOffsetUnits={1}
         />
-        <Edges color={nodeColors.GPU} threshold={15} />
+        <Edges color={color} threshold={15} />
       </mesh>
       {showLabels && (
         <Text
-          position={[0, 0.45, 0]}
+          position={[0, 0.3, 0]}
           fontSize={0.15}
-          color={nodeColors.GPU}
+          color={color}
           anchorX="center"
           anchorY="bottom"
           font={undefined}

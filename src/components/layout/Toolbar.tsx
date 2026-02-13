@@ -8,8 +8,11 @@ export function Toolbar() {
   const setSidePanel = useUIStore((s) => s.setSidePanel)
   const infoPanel = useUIStore((s) => s.infoPanel)
   const setInfoPanel = useUIStore((s) => s.setInfoPanel)
-  const layoutMode = useUIStore((s) => s.layoutMode)
-  const setLayoutMode = useUIStore((s) => s.setLayoutMode)
+  const scaleView = useUIStore((s) => s.scaleView)
+  const setScaleView = useUIStore((s) => s.setScaleView)
+  const selectedServer = useUIStore((s) => s.selectedServer)
+  const showCPUs = useUIStore((s) => s.showCPUs)
+  const toggleCPUs = useUIStore((s) => s.toggleCPUs)
 
   return (
     <div className="h-11 flex-shrink-0 border-b border-surface-600 bg-surface-800 flex items-center px-3 gap-4">
@@ -31,27 +34,43 @@ export function Toolbar() {
 
       <div className="w-px h-6 bg-surface-600" />
 
-      {/* Layout mode */}
+      {/* Scale view: Cluster / Node */}
       <div className="flex items-center gap-1">
-        <span className="text-gray-500 text-[10px] mr-1">Layout</span>
+        <span className="text-gray-500 text-[10px] mr-1">Scale</span>
         <button
-          onClick={() => setLayoutMode('flat')}
-          className={`btn-secondary text-[10px] ${layoutMode === 'flat' ? 'text-neon-cyan border-neon-cyan/30' : ''}`}
+          onClick={() => setScaleView('cluster')}
+          className={`btn-secondary text-[10px] ${scaleView === 'cluster' ? 'text-neon-cyan border-neon-cyan/30' : ''}`}
         >
-          Flat
+          Cluster
         </button>
         <button
-          onClick={() => setLayoutMode('3d')}
-          className={`btn-secondary text-[10px] ${layoutMode === '3d' ? 'text-neon-cyan border-neon-cyan/30' : ''}`}
+          onClick={() => setScaleView('node')}
+          className={`btn-secondary text-[10px] ${scaleView === 'node' ? 'text-neon-cyan border-neon-cyan/30' : ''}`}
         >
-          3D
+          Node
         </button>
+        {selectedServer !== null && (
+          <span className="text-neon-magenta text-[10px] ml-1">S{selectedServer}</span>
+        )}
       </div>
 
       <div className="w-px h-6 bg-surface-600" />
 
       {/* Channel selector */}
       <ChannelSelector />
+
+      <div className="w-px h-6 bg-surface-600" />
+
+      {/* Display toggles */}
+      <div className="flex items-center gap-1">
+        <span className="text-gray-500 text-[10px] mr-1">Show</span>
+        <button
+          onClick={toggleCPUs}
+          className={`btn-secondary text-[10px] ${showCPUs ? 'text-neon-cyan border-neon-cyan/30' : ''}`}
+        >
+          CPUs
+        </button>
+      </div>
 
       <div className="flex-1" />
 

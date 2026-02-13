@@ -1,61 +1,73 @@
 import { useMemo } from 'react'
 import type { TopoSystem } from '../engine/types'
 import { NodeType } from '../engine/types'
-import { useUIStore, type LayoutMode } from '../store/ui-store'
+import { useUIStore } from '../store/ui-store'
 
 export interface LayoutResult {
   nodePositions: Map<string, [number, number, number]>
+  nodeRotations: Map<string, number> // Y-axis rotation in radians
 }
 
 /**
- * Compute 3D positions for all nodes in a topology system.
+ * Compute 2D positions for all nodes in a topology system.
  *
- * Three conceptual planes intersect at the GPU/PCIe area:
- *   - PCIe plane (vertical, z=0):    CPU → PCIe → GPU
- *   - NVLink plane (perpendicular, -Z): NVSwitch ↔ GPU
- *   - NIC plane (perpendicular, +Z):    NIC ↔ PCIe switch (opposite NVLink)
+ * Layout is on the XZ ground plane (y ≈ 0), viewed from an angle.
+ * Rows from camera → horizon: NICs(+Z) → PCIe → GPUs → NVSwitch(-Z).
  *
- * Layout modes:
- *   - "flat":  All collapsed onto XY (z=0). NICs grouped under their PCIe switch.
- *   - "3d":    PCIe plane on z=0, NVLink extends -Z, NICs extend +Z.
+ * Scale views:
+ *   - "cluster": Full multi-node radial layout
+ *   - "node":    Single server centered at origin
  */
 export function useLayout(system: TopoSystem | null): LayoutResult {
-  const layoutMode = useUIStore((s) => s.layoutMode)
+  const scaleView = useUIStore((s) => s.scaleView)
+  const selectedServer = useUIStore((s) => s.selectedServer)
+  const showCPUs = useUIStore((s) => s.showCPUs)
 
   return useMemo(() => {
     const nodePositions = new Map<string, [number, number, number]>()
+    const nodeRotations = new Map<string, number>()
 
-    if (!system) return { nodePositions }
+    if (!system) return { nodePositions, nodeRotations }
 
     const isMultiNode = system.nodes.some(n => n.id.startsWith('s0-') || n.id.startsWith('s1-'))
 
     if (isMultiNode) {
-      layoutMultiNode(system, nodePositions, layoutMode)
+      if (scaleView === 'node') {
+        // Node view: lay out only the selected server at origin
+        const prefix = `s${selectedServer ?? 0}-`
+        layoutSingleServer(system, nodePositions, 0, 0, showCPUs, prefix)
+      } else {
+        layoutMultiNode(system, nodePositions, nodeRotations, showCPUs)
+      }
     } else {
-      layoutSingleServer(system, nodePositions, 0, 0, layoutMode)
+      layoutSingleServer(system, nodePositions, 0, 0, showCPUs)
     }
 
-    return { nodePositions }
-  }, [system, layoutMode])
+    return { nodePositions, nodeRotations }
+  }, [system, scaleView, selectedServer, showCPUs])
 }
 
 /**
- * Build a map from NIC id to the PCIe switch id it's attached to,
+ * Build a map from child node id to the PCIe switch id it's attached to,
  * by inspecting the system's links.
  */
-function buildNicToPciMap(system: TopoSystem, filterPrefix?: string): Map<string, string> {
+function buildChildToPciMap(
+  system: TopoSystem,
+  childTag: string,
+  filterPrefix?: string,
+): Map<string, string> {
   const map = new Map<string, string>()
   for (const link of system.links) {
     const fromIsPci = link.fromId.includes('pci-')
-    const toIsNic = link.toId.includes('nic-')
+    const toIsChild = link.toId.includes(childTag)
     const toIsPci = link.toId.includes('pci-')
-    const fromIsNic = link.fromId.includes('nic-')
+    const fromIsChild = link.fromId.includes(childTag)
 
-    if (fromIsNic && toIsPci) {
+    if (fromIsChild && toIsPci) {
       if (!filterPrefix || link.fromId.startsWith(filterPrefix)) {
         map.set(link.fromId, link.toId)
       }
-    } else if (fromIsPci && toIsNic) {
+    } else if (fromIsPci && toIsChild) {
       if (!filterPrefix || link.toId.startsWith(filterPrefix)) {
         map.set(link.toId, link.fromId)
       }
@@ -64,12 +76,38 @@ function buildNicToPciMap(system: TopoSystem, filterPrefix?: string): Map<string
   return map
 }
 
+/** Group nodes by their parent PCIe switch id. */
+function groupByPci(
+  nodes: readonly { id: string }[],
+  childToPci: Map<string, string>,
+): { byPci: Map<string, { id: string }[]>; unattached: { id: string }[] } {
+  const byPci = new Map<string, { id: string }[]>()
+  const unattached: { id: string }[] = []
+  for (const node of nodes) {
+    const pciId = childToPci.get(node.id)
+    if (pciId) {
+      let group = byPci.get(pciId)
+      if (!group) { group = []; byPci.set(pciId, group) }
+      group.push(node)
+    } else {
+      unattached.push(node)
+    }
+  }
+  return { byPci, unattached }
+}
+
+/**
+ * PCIe-centric layout on XZ ground plane.
+ * Chain from camera → horizon: NICs(z=3) → PCIe(z=1) → GPUs(z=-1) → NVSwitch(z=-3)
+ * Uniform row gap of 2 units.
+ * Alignment: GPUs & NICs share X spacing, PCIe & NVSwitch share X spacing.
+ */
 function layoutSingleServer(
   system: TopoSystem,
   positions: Map<string, [number, number, number]>,
   offsetX: number,
   offsetY: number,
-  layoutMode: LayoutMode,
+  showCPUs: boolean,
   filterPrefix?: string,
 ): void {
   const filter = (nodes: readonly { id: string }[]) =>
@@ -83,112 +121,94 @@ function layoutSingleServer(
 
   const gpuCount = gpus.length
   const gpuSpacing = 1.2
-  const gpuStartX = -((gpuCount - 1) * gpuSpacing) / 2 + offsetX
-
-  // --- GPU row: the intersection of all planes ---
-  gpus.forEach((node, i) => {
-    positions.set(node.id, [gpuStartX + i * gpuSpacing, offsetY, 0])
-  })
-
-  // --- PCIe plane (vertical, z=0): CPU → PCIe → GPU ---
-
-  // PCIe switches: above GPUs
   const pciCount = pcis.length
-  const pciSpacing = gpuCount > 0 ? ((gpuCount - 1) * gpuSpacing) / Math.max(pciCount - 1, 1) : 1
-  const pciStartX = pciCount > 1 ? gpuStartX : offsetX
-  const pciPositions: [number, number, number][] = []
+
+  const rowGap = 2
+  const childSpacing = gpuSpacing          // GPUs and NICs use the same spacing
+
+  const gpuToPci = buildChildToPciMap(system, 'gpu-', filterPrefix)
+  const nicToPci = buildChildToPciMap(system, 'nic-', filterPrefix)
+  const { byPci: gpusByPci, unattached: unattachedGpus } = groupByPci(gpus, gpuToPci)
+  const { byPci: nicsByPci, unattached: unattachedNics } = groupByPci(nics, nicToPci)
+
+  // PCIe spacing: wide enough for the largest child group (GPUs or NICs)
+  const maxChildrenPerPci = Math.max(1,
+    ...Array.from(gpusByPci.values()).map(g => g.length),
+    ...Array.from(nicsByPci.values()).map(g => g.length))
+  const pciGroupWidth = (maxChildrenPerPci - 1) * childSpacing
+  const pciSpacing = pciGroupWidth + 1.5
+  const pciStartX = -((pciCount - 1) * pciSpacing) / 2 + offsetX
+
+  // Row Z positions (uniform gap)
+  const zNIC = rowGap * 1.5
+  const zPCI = rowGap * 0.5
+  const zGPU = -rowGap * 0.5
+  const zNVS = -rowGap * 1.5
+
+  // PCIe switches
   pcis.forEach((node, i) => {
-    const pos: [number, number, number] = [pciStartX + i * pciSpacing, offsetY + 1.2, 0]
-    pciPositions.push(pos)
-    positions.set(node.id, pos)
+    positions.set(node.id, [pciStartX + i * pciSpacing, 0.01, zPCI])
   })
 
-  // CPUs: top of PCIe tree
-  const cpuCount = cpus.length
-  const cpuSpacing2 = gpuCount > 0 ? ((gpuCount - 1) * gpuSpacing) / Math.max(cpuCount - 1, 1) : 3
-  const cpuStartX = cpuCount > 1 ? gpuStartX : offsetX
-  cpus.forEach((node, i) => {
-    positions.set(node.id, [cpuStartX + i * cpuSpacing2, offsetY + 2.4, 0])
-  })
-
-  // --- NVLink/xGMI plane (perpendicular, -Z from GPUs) ---
+  // NVSwitches — same X spacing as PCIe, centered over the same width
   const nvsCount = nvs.length
-  const nvsSpacing = gpuCount > 0 ? ((gpuCount - 1) * gpuSpacing) / Math.max(nvsCount - 1, 1) : 2
-  const nvsStartX = nvsCount > 1 ? gpuStartX : offsetX
+  const nvsStartX = -((nvsCount - 1) * pciSpacing) / 2 + offsetX
+  nvs.forEach((node, i) => {
+    positions.set(node.id, [nvsStartX + i * pciSpacing, 0.01, zNVS])
+  })
 
-  if (layoutMode === '3d') {
-    nvs.forEach((node, i) => {
-      positions.set(node.id, [nvsStartX + i * nvsSpacing, offsetY, -2.5])
-    })
-  } else {
-    // Flat: NVSwitches slightly above GPUs
-    nvs.forEach((node, i) => {
-      positions.set(node.id, [nvsStartX + i * nvsSpacing, offsetY + 0.6, 0])
+  // GPUs grouped under parent PCIe — uses childSpacing
+  for (const pci of pcis) {
+    const pciPos = positions.get(pci.id)
+    if (!pciPos) continue
+    const group = gpusByPci.get(pci.id) ?? []
+    const startX = pciPos[0] - ((group.length - 1) * childSpacing) / 2
+    group.forEach((gpu, j) => {
+      positions.set(gpu.id, [startX + j * childSpacing, 0.01, zGPU])
     })
   }
+  unattachedGpus.forEach((gpu, i) => {
+    positions.set(gpu.id, [offsetX + i * childSpacing, 0.01, zGPU])
+  })
 
-  // --- NIC plane (perpendicular, +Z from PCIe, opposite NVLink) ---
-  // Group NICs by their parent PCIe switch, position under that switch
-  const nicToPci = buildNicToPciMap(system, filterPrefix)
-
-  // Group NICs by PCIe switch
-  const nicsByPci = new Map<string, { id: string }[]>()
-  const unattachedNics: { id: string }[] = []
-
-  for (const nic of nics) {
-    const pciId = nicToPci.get(nic.id)
-    if (pciId) {
-      let group = nicsByPci.get(pciId)
-      if (!group) { group = []; nicsByPci.set(pciId, group) }
-      group.push(nic)
-    } else {
-      unattachedNics.push(nic)
-    }
-  }
-
-  if (layoutMode === '3d') {
-    // 3D: NICs extend into +Z at the same Y as their parent PCIe switch
-    // (perpendicular to the PCIe plane)
-    for (const pci of pcis) {
-      const pciPos = positions.get(pci.id)
-      if (!pciPos) continue
-      const group = nicsByPci.get(pci.id) ?? []
-      const groupSpacing = 0.8
-      const groupStartX = pciPos[0] - ((group.length - 1) * groupSpacing) / 2
-      group.forEach((nic, j) => {
-        positions.set(nic.id, [groupStartX + j * groupSpacing, pciPos[1], 2.5])
-      })
-    }
-    // Unattached NICs: spread at PCIe height
-    const pciY = offsetY + 1.2
-    unattachedNics.forEach((nic, i) => {
-      positions.set(nic.id, [gpuStartX + i * gpuSpacing, pciY, 2.5])
+  // NICs grouped under parent PCIe — same childSpacing so they align with GPUs
+  for (const pci of pcis) {
+    const pciPos = positions.get(pci.id)
+    if (!pciPos) continue
+    const group = nicsByPci.get(pci.id) ?? []
+    const startX = pciPos[0] - ((group.length - 1) * childSpacing) / 2
+    group.forEach((nic, j) => {
+      positions.set(nic.id, [startX + j * childSpacing, 0.01, zNIC])
     })
-  } else {
-    // Flat: NICs below GPUs, grouped under their parent PCIe switch
-    for (const pci of pcis) {
-      const pciPos = positions.get(pci.id)
-      if (!pciPos) continue
-      const group = nicsByPci.get(pci.id) ?? []
-      const groupSpacing = 0.8
-      const groupStartX = pciPos[0] - ((group.length - 1) * groupSpacing) / 2
-      group.forEach((nic, j) => {
-        positions.set(nic.id, [groupStartX + j * groupSpacing, offsetY - 1.5, 0])
-      })
-    }
-    // Unattached NICs: spread evenly below
-    const unattachedSpacing = gpuCount > 0 ? ((gpuCount - 1) * gpuSpacing) / Math.max(unattachedNics.length - 1, 1) : 1.2
-    const unattachedStartX = unattachedNics.length > 1 ? gpuStartX : offsetX
-    unattachedNics.forEach((nic, i) => {
-      positions.set(nic.id, [unattachedStartX + i * unattachedSpacing, offsetY - 1.5, 0])
+  }
+  unattachedNics.forEach((nic, i) => {
+    positions.set(nic.id, [offsetX + i * childSpacing, 0.01, zNIC])
+  })
+
+  // CPUs (only if toggled on)
+  if (showCPUs) {
+    const cpuCount = cpus.length
+    const totalWidth = (pciCount - 1) * pciSpacing
+    const cpuSpacing2 = totalWidth > 0 ? totalWidth / Math.max(cpuCount - 1, 1) : 3
+    const cpuStartX = cpuCount > 1 ? pciStartX : offsetX
+    cpus.forEach((node, i) => {
+      positions.set(node.id, [cpuStartX + i * cpuSpacing2, 0.01, zNVS - rowGap])
     })
   }
 }
 
+/**
+ * Radial multi-node layout:
+ *   - NET switch circles in a small ring at center
+ *   - Each server preserves its single-server layout
+ *   - Servers are placed around a circle and rotated so NICs (+Z side)
+ *     face the center (toward NET switches), NVSwitches face outward
+ */
 function layoutMultiNode(
   system: TopoSystem,
   positions: Map<string, [number, number, number]>,
-  layoutMode: LayoutMode,
+  rotations: Map<string, number>,
+  showCPUs: boolean,
 ): void {
   const serverPrefixes = new Set<string>()
   for (const node of system.nodes) {
@@ -199,23 +219,56 @@ function layoutMultiNode(
   const servers = Array.from(serverPrefixes).sort()
   const serverCount = servers.length
 
-  const serverSpacing = 14
-  const totalWidth = (serverCount - 1) * serverSpacing
-  const startX = -totalWidth / 2
-
-  for (let s = 0; s < servers.length; s++) {
-    const prefix = servers[s]
-    const sOffsetX = startX + s * serverSpacing
-    layoutSingleServer(system, positions, sOffsetX, 0, layoutMode, prefix)
-  }
-
-  // NET switches: below all servers
+  // --- NET switches: circle at center ---
   const netNodes = system.nodesByType.get(NodeType.NET) ?? []
   const netCount = netNodes.length
-  const netSpacing = netCount > 1 ? totalWidth / (netCount - 1) : 0
-  const netStartX = netCount > 1 ? -totalWidth / 2 : 0
+  const netRadius = Math.max(1.0, netCount * 0.5)
 
   netNodes.forEach((node, i) => {
-    positions.set(node.id, [netStartX + i * netSpacing, -4, 0])
+    const angle = (i / Math.max(netCount, 1)) * Math.PI * 2
+    positions.set(node.id, [
+      netRadius * Math.cos(angle),
+      0,
+      netRadius * Math.sin(angle),
+    ])
   })
+
+  // --- Calculate circle radius so servers don't overlap ---
+  // Server width is determined by the GPU row spread
+  const gpusPerServer = ((system.nodesByType.get(NodeType.GPU) ?? []).length) / serverCount
+  const serverWidth = Math.max((gpusPerServer - 1) * 1.2, 2)
+  const gap = 4 // spacing between adjacent servers
+  const circumference = serverCount * (serverWidth + gap)
+  const serverRadius = Math.max(circumference / (2 * Math.PI), netRadius + 8)
+
+  // --- Place each server around the circle ---
+  for (let s = 0; s < serverCount; s++) {
+    const prefix = servers[s]
+    const angle = (s / serverCount) * Math.PI * 2
+
+    // 1. Compute single-server layout at origin
+    const tempPositions = new Map<string, [number, number, number]>()
+    layoutSingleServer(system, tempPositions, 0, 0, showCPUs, prefix)
+
+    // 2. Rotate around Y axis so +Z (NIC side) faces center
+    //    Rotation angle: -(angle + π/2)
+    const rotAngle = -(angle + Math.PI / 2)
+    const cosA = Math.cos(rotAngle)
+    const sinA = Math.sin(rotAngle)
+
+    // 3. Server center on the circle
+    const cx = serverRadius * Math.cos(angle)
+    const cz = serverRadius * Math.sin(angle)
+
+    // 4. Transform each position: rotate then translate
+    for (const [id, pos] of tempPositions) {
+      const [x, y, z] = pos
+      positions.set(id, [
+        x * cosA + z * sinA + cx,
+        y,
+        -x * sinA + z * cosA + cz,
+      ])
+      rotations.set(id, rotAngle)
+    }
+  }
 }
