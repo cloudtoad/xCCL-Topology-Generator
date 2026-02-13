@@ -1,0 +1,1026 @@
+# =============================================================================
+# Fidelity Manifest — maps every decision point in our engine to NCCL source
+#
+# Reference source: ~/xCCL-Book/ref/nccl/src/
+# Our engine:       src/engine/
+# =============================================================================
+
+modules:
+  # ---------------------------------------------------------------------------
+  # paths — SPFA shortest path computation
+  # ---------------------------------------------------------------------------
+  paths:
+    our_file: src/engine/paths.ts
+    ref_file: graph/paths.cc
+    functions:
+      - name: classifyHop
+        our_lines: "94-151"
+        ref_lines: "91-101"
+        description: "Classify path type of a single hop between two nodes"
+        decisions:
+          - id: net-link-is-loc
+            our_line: 105
+            ref_line: 93
+            rule: "NET links within local topology treated as LOC"
+          - id: pci-to-pci-is-pxb
+            our_line: 108
+            ref_line: 95
+            rule: "PCI→PCI traversal = PATH_PXB"
+          - id: pci-cpu-is-phb
+            our_line: 113
+            ref_line: 97
+            rule: "PCI link touching CPU = PATH_PHB"
+          - id: nvlink-bounce
+            our_line: 124
+            ref_line: "98-99"
+            rule: "GPU→GPU via NVL with hopCount>1 and pathSoFar==NVL = PATH_NVB"
+          - id: default-link-to-path
+            our_lines: "127-146"
+            ref_line: "92-101"
+            rule: "Default: link type maps to path type (LOC→LOC, NVL→NVL, PCI→PIX, C2C→C2C, SYS→SYS)"
+          - id: max-path-type
+            our_line: 150
+            ref_line: 101
+            rule: "Path type = max(pathSoFar, hopType) — worst hop dominates"
+
+      - name: spfaFromSource
+        our_lines: "172-293"
+        ref_lines: "36-113"
+        ref_function: ncclTopoSetPaths
+        description: "BFS/SPFA shortest path from single source node"
+        decisions:
+          - id: source-init-loc
+            our_line: "184-186"
+            ref_line: "48-50"
+            rule: "Source node: pathType=LOC, bw=LOC_BW(5000), count=0"
+          - id: gpu-passthrough-guard
+            our_line: "209-221"
+            ref_line: "69-71"
+            rule: "Non-source GPU only allows NVL to GPU with hops<=1, unless NVB disabled"
+          - id: bottleneck-bw
+            our_line: 255
+            ref_line: 67
+            rule: "Bottleneck BW = min(path.bw, link.bw)"
+          - id: intel-p2p-overhead
+            our_line: "237-252"
+            ref_line: 37
+            rule: "Intel CPU PHB path: PCI BW reduced by factor 6/5 (INTEL_P2P_OVERHEAD)"
+          - id: domination-check
+            our_lines: "260-269"
+            ref_line: 73
+            rule: "New path dominates if: lower type, or same type with higher BW"
+
+      - name: applyPxnPaths
+        our_lines: "303-414"
+        ref_lines: "725-749"
+        description: "PXN optimization — route GPU→NIC through NVLink-connected peer"
+        decisions:
+          - id: pxn-disable-check
+            our_line: "310-311"
+            ref_line: 592
+            rule: "NCCL_PXN_DISABLE=1 skips PXN entirely"
+          - id: pxn-local-gpu
+            our_lines: "328-344"
+            ref_line: 730
+            rule: "Find GPU with best direct path to NIC (ncclTopoGetLocalGpu)"
+          - id: pxn-condition-pxb
+            our_line: 359
+            ref_line: "736-737"
+            rule: "Peer must be connected to NIC with PXB or better"
+          - id: pxn-condition-nvl
+            our_line: 364
+            ref_line: "738-739"
+            rule: "Peer must be connected to src GPU through NVLink"
+          - id: pxn-condition-same-node
+            our_line: "366"
+            ref_line: "740-741"
+            rule: "Peer must be on same node (always true for single-server)"
+          - id: pxn-condition-better-bw
+            our_lines: "369-374"
+            ref_line: "742-743"
+            rule: "Peer has better BW to NIC or current path avoids CPU (type > PXN)"
+
+      - name: computeAllPaths
+        our_lines: "427-591"
+        ref_lines: "645-760"
+        ref_function: ncclTopoComputePaths
+        description: "Compute all shortest paths between GPU/NIC pairs"
+        decisions:
+          - id: nvb-disable-check
+            our_line: 449
+            ref_line: 34
+            rule: "NCCL_NVB_DISABLE controls NVLink bounce routing"
+          - id: source-types
+            our_lines: "462-464"
+            ref_lines: "652-668"
+            rule: "Run SPFA from all GPUs, NICs, CPUs, and NVSwitches"
+          - id: self-path-loc
+            our_lines: "492-502"
+            ref_line: "48-50"
+            rule: "Self-path: LOC with infinite bandwidth"
+
+      - name: trimSystem
+        our_lines: "604-735"
+        ref_file: "init.cc"
+        description: "Remove unreachable nodes, determine inter-node connectivity"
+        decisions:
+          - id: bfs-from-gpus
+            our_lines: "637-652"
+            rule: "BFS from all GPU nodes to find reachable nodes"
+          - id: inter-detection
+            our_lines: "709-723"
+            rule: "system.inter = true if any GPU pair has NET or SYS path"
+
+  # ---------------------------------------------------------------------------
+  # topo — topology system builder
+  # ---------------------------------------------------------------------------
+  topo:
+    our_file: src/engine/topo.ts
+    ref_file: graph/topo.cc
+    functions:
+      - name: buildTopoSystem
+        our_lines: "104-431"
+        ref_function: ncclTopoGetSystem
+        ref_lines: "~1423"
+        description: "Build topology graph from hardware config (replaces hardware probing)"
+        decisions:
+          - id: nvswitch-topology
+            our_lines: "212-231"
+            rule: "NVSwitch present → every GPU connects to every NVSwitch via NVL"
+          - id: xgmi-mesh
+            our_lines: "242-256"
+            rule: "AMD GPU → xGMI full mesh (every GPU to every other)"
+          - id: nvlink-mesh
+            our_lines: "266-279"
+            rule: "NVIDIA direct NVLink mesh (no NVSwitch)"
+          - id: gpu-pci-cpu-routing
+            our_lines: "303-327"
+            rule: "GPU ↔ PCIe switch ↔ CPU based on numaMapping"
+          - id: nic-pci-cpu-routing
+            our_lines: "335-360"
+            rule: "NIC ↔ PCIe switch ↔ CPU (rail-optimized: NIC i pairs with GPU i)"
+          - id: inter-socket-links
+            our_lines: "365-376"
+            rule: "CPU ↔ CPU links with SYS type and model-specific bandwidth"
+
+      - name: pcieBandwidth
+        our_lines: "42-44"
+        ref_file: topo.h
+        description: "PCIe bandwidth = PCI_BW * (gen/3) * (width/16)"
+        decisions:
+          - id: pcie-scaling
+            our_line: 43
+            ref_line: 23
+            rule: "PCI_BW=12.0 is Gen3 x16 baseline; scale linearly by gen and width"
+
+      - name: interSocketBw
+        our_lines: "47-63"
+        ref_file: topo.h
+        description: "Return inter-socket bandwidth by CPU arch/vendor/model"
+        decisions:
+          - id: power9-bw
+            our_line: 48
+            ref_line: 31
+            rule: "POWER → P9_BW (32.0)"
+          - id: arm-bw
+            our_line: 49
+            ref_line: 32
+            rule: "ARM → ARM_BW (6.0)"
+          - id: amd-bw
+            our_line: 52
+            ref_line: 24
+            rule: "AMD → AMD_BW (16.0)"
+          - id: zhaoxin-bw
+            our_line: 53
+            ref_line: 29
+            rule: "Zhaoxin → ZPI_BW (6.0)"
+          - id: intel-model-bw
+            our_lines: "56-62"
+            ref_lines: "25-28"
+            rule: "Intel BDW=6, SKL=10, SRP=22, ERP=40"
+
+  # ---------------------------------------------------------------------------
+  # search — ring/tree graph search
+  # ---------------------------------------------------------------------------
+  search:
+    our_file: src/engine/search.ts
+    ref_file: graph/search.cc
+    functions:
+      - name: ncclTopoCompute
+        our_lines: "501-891"
+        ref_lines: "1014-1238"
+        description: "Two-phase ring search: find solution, then optimize"
+        decisions:
+          - id: cross-nic-param
+            our_line: 515
+            ref_line: 15
+            rule: "NCCL_CROSS_NIC default=2 (auto)"
+          - id: speed-array-selection
+            our_lines: "538-539"
+            ref_lines: "976-989"
+            rule: "Speed arrays selected by compute capability and inter/intra"
+          - id: starting-speed-index
+            our_lines: "555-563"
+            ref_lines: "1096-1106"
+            rule: "Start at first speed where s<=maxBw and s*nGpus<=totalBw"
+          - id: phase1-relaxation
+            our_lines: "596-771"
+            ref_lines: "1108-1190"
+            rule: "Relax: sameChannels→0, pattern, typeIntra++, typeInter++, crossNic"
+          - id: phase2-optimize
+            our_lines: "777-844"
+            ref_lines: "1192-1230"
+            rule: "Try higher speeds to improve total bandwidth"
+
+      - name: searchRingRec
+        our_lines: "222-319"
+        ref_lines: "335-500"
+        ref_function: ncclTopoSearchRec
+        description: "Recursive Hamiltonian cycle backtracking search"
+        decisions:
+          - id: timeout-check
+            our_line: 236
+            ref_lines: "315-318"
+            rule: "SEARCH_TIMEOUT=2^14, GLOBAL_TIMEOUT=2^19"
+          - id: ring-closure
+            our_lines: "242-251"
+            rule: "When all GPUs visited, check closure path feasibility"
+          - id: gpu-scoring
+            our_lines: "254-281"
+            ref_lines: "191-210"
+            rule: "Score candidates by interBw, interPciBw, interNhops, intraBw, intraNhops"
+          - id: bw-consumption
+            our_lines: "290-291"
+            rule: "Consume bandwidth on forward path for each channel"
+
+      - name: searchForChannels
+        our_lines: "349-434"
+        ref_lines: "850-970"
+        description: "Search for ring channels at a given speed"
+        decisions:
+          - id: single-gpu-trivial
+            our_lines: "362-373"
+            rule: "Single GPU → trivial channels up to maxChannels"
+          - id: timeout-selection
+            our_lines: "375-380"
+            ref_lines: "315-318"
+            rule: "sameChannels → 256, tree → 16384, else → 16384"
+          - id: reuse-ring
+            our_lines: "393-395"
+            rule: "sameChannels=1: reuse first ring ordering if bandwidth permits"
+
+  # ---------------------------------------------------------------------------
+  # trees — tree construction
+  # ---------------------------------------------------------------------------
+  trees:
+    our_file: src/engine/trees.ts
+    ref_file: graph/trees.cc
+    functions:
+      - name: getBtree
+        our_lines: "28-53"
+        ref_lines: "18-86"
+        ref_function: ncclGetBtree
+        description: "Standard binary tree for inter-node tree construction"
+        decisions:
+          - id: root-has-no-parent
+            our_line: 41
+            rule: "rank 0 → up = -1"
+          - id: binary-children
+            our_lines: "46-50"
+            rule: "left = 2*rank+1, right = 2*rank+2"
+
+      - name: ncclGetDtree
+        our_lines: "62-92"
+        ref_lines: "88-109"
+        description: "Double binary tree — two complementary trees for overlap"
+        decisions:
+          - id: even-mirror
+            our_lines: "73-80"
+            ref_lines: "91-97"
+            rule: "Even nRanks: mirror rank = nRanks-1-rank"
+          - id: odd-shift
+            our_lines: "81-89"
+            ref_lines: "98-107"
+            rule: "Odd nRanks: shift rank = (rank-1+nRanks) % nRanks"
+
+      - name: buildTreeGraph
+        our_lines: "135-189"
+        ref_function: ncclTopoPreset
+        ref_file: graph/connect.cc
+        description: "Build tree graph from ring graph — intra-node chains"
+        decisions:
+          - id: chain-from-ring
+            our_lines: "151-163"
+            rule: "Each ring channel → 1 tree channel (chain following ring order)"
+
+  # ---------------------------------------------------------------------------
+  # rings — ring connection setup
+  # ---------------------------------------------------------------------------
+  rings:
+    our_file: src/engine/rings.ts
+    ref_file: graph/rings.cc
+    functions:
+      - name: setupRings
+        our_lines: "23-106"
+        description: "Build prev/next maps for each ring channel from ring ordering"
+        decisions:
+          - id: circular-prev-next
+            our_lines: "56-63"
+            rule: "next[i] = order[(i+1)%len], prev[i] = order[(i-1+len)%len]"
+
+  # ---------------------------------------------------------------------------
+  # connect — channel wiring and tree doubling
+  # ---------------------------------------------------------------------------
+  connect:
+    our_file: src/engine/connect.ts
+    ref_file: graph/connect.cc
+    functions:
+      - name: setupChannels
+        our_lines: "53-187"
+        ref_lines: "~580-700"
+        ref_function: ncclTopoPreset
+        description: "Wire ring prev/next, double tree channels"
+        decisions:
+          - id: ring-finalization
+            our_lines: "74-99"
+            rule: "Populate prev/next maps from ringOrder"
+          - id: tree-doubling
+            our_lines: "121-147"
+            rule: "Each ring channel → 2 tree channels (forward + reverse chain)"
+          - id: reverse-chain
+            our_lines: "136-137"
+            rule: "Tree 1 (odd index): reversed ring order"
+
+  # ---------------------------------------------------------------------------
+  # tuning — algorithm/protocol selection
+  # ---------------------------------------------------------------------------
+  tuning:
+    our_file: src/engine/tuning.ts
+    ref_file: graph/tuning.cc
+    functions:
+      - name: selectAlgorithm
+        our_lines: "316-393"
+        description: "Main tuning entry point — choose algo, protocol, threads"
+        decisions:
+          - id: forced-algo
+            our_lines: "335-336"
+            rule: "NCCL_ALGO env var forces algorithm (-2=auto)"
+          - id: forced-proto
+            our_line: 336
+            rule: "NCCL_PROTO env var forces protocol (-2=auto)"
+
+      - name: selectProtocol
+        our_lines: "65-130"
+        description: "Choose LL/LL128/SIMPLE based on message size and NVLink"
+        decisions:
+          - id: small-msg-ll
+            our_line: 84
+            rule: "messageSize <= 4KB → LL"
+          - id: medium-msg-ll128
+            our_line: 97
+            rule: "messageSize <= 512KB with NVLink → LL128"
+          - id: large-msg-simple
+            our_line: 121
+            rule: "messageSize > 512KB → SIMPLE"
+
+      - name: selectAlgo
+        our_lines: "139-221"
+        description: "Choose RING or TREE based on rank count and message size"
+        decisions:
+          - id: many-ranks-ring
+            our_line: 187
+            rule: "nRanks > 8 → RING (better bandwidth scaling)"
+          - id: large-msg-ring
+            our_line: 199
+            rule: "messageSize > 512KB → RING (higher sustained throughput)"
+          - id: small-tree
+            our_line: 219
+            rule: "nRanks <= 8 with small/medium messages → TREE"
+
+  # ---------------------------------------------------------------------------
+  # init — orchestrator
+  # ---------------------------------------------------------------------------
+  init:
+    our_file: src/engine/init.ts
+    ref_file: init.cc
+    functions:
+      - name: runInit
+        our_lines: "56-388"
+        ref_lines: "1024-1102"
+        description: "Full initialization pipeline: build → paths → trim → search → connect"
+        decisions:
+          - id: pipeline-order
+            rule: "buildTopo → computePaths → trim → recomputePaths → ringSearch → treeSearch → setupRings → setupChannels"
+          - id: rccl-rome-match
+            our_lines: "208-245"
+            rule: "RCCL mode: try Rome model match before expensive ring search"
+          - id: ring-max-half
+            our_line: 354
+            rule: "Ring search maxChannels = floor(maxChannels/2)"
+          - id: tree-from-ring
+            our_line: 271
+            rule: "Tree graph built from ring graph (chains following ring order)"
+          - id: channel-bounds
+            our_lines: "181-188"
+            ref_lines: "1060-1072"
+            rule: "NCCL_MIN_NCHANNELS and NCCL_MAX_NCHANNELS clamp channel count"
+
+  # ---------------------------------------------------------------------------
+  # RCCL — Rome model matching
+  # ---------------------------------------------------------------------------
+  rccl_rome_match:
+    our_file: src/engine/rccl/rome-match.ts
+    ref_file: rome_models.cc
+    functions:
+      - name: matchRomeModel
+        description: "Match topology against pre-computed Rome models"
+        decisions:
+          - id: model-matching-disable
+            rule: "RCCL_MODEL_MATCHING_DISABLE=1 skips model match"
+          - id: reversal-disable
+            rule: "RCCL_MODEL_REVERSAL_DISABLE=1 skips automatic ring reversal"
+
+  rccl_rome_models:
+    our_file: src/engine/rccl/rome-models.ts
+    ref_file: rome_models.cc
+    functions:
+      - name: romeTopoModels
+        description: "Pre-computed ring orderings for AMD Rome/Milan/Genoa topologies"
+        decisions:
+          - id: model-count
+            rule: "46 pre-computed models in romeTopoModels array"
+
+# =============================================================================
+# Constants — bandwidth values from topo.h
+# =============================================================================
+constants:
+  - name: LOC_BW
+    our_value: 5000.0
+    our_file: "src/engine/constants/nccl.ts:6"
+    ref_file: "topo.h:16"
+
+  - name: SM60_NVLINK_BW
+    our_value: 18.0
+    our_file: "src/engine/constants/nccl.ts:7"
+    ref_file: "topo.h:17"
+
+  - name: SM70_NVLINK_BW
+    our_value: 20.0
+    our_file: "src/engine/constants/nccl.ts:8"
+    ref_file: "topo.h:18"
+
+  - name: SM80_NVLINK_BW
+    our_value: 20.0
+    our_file: "src/engine/constants/nccl.ts:9"
+    ref_file: "topo.h:19"
+
+  - name: SM90_NVLINK_BW
+    our_value: 20.6
+    our_file: "src/engine/constants/nccl.ts:10"
+    ref_file: "topo.h:20"
+
+  - name: SM86_NVLINK_BW
+    our_value: 12.0
+    our_file: "src/engine/constants/nccl.ts:11"
+    ref_file: "topo.h:21"
+
+  - name: SM100_NVLINK_BW
+    our_value: 40.1
+    our_file: "src/engine/constants/nccl.ts:12"
+    ref_file: "topo.h:22"
+
+  - name: PCI_BW
+    our_value: 12.0
+    our_file: "src/engine/constants/nccl.ts:13"
+    ref_file: "topo.h:23"
+
+  - name: AMD_BW
+    our_value: 16.0
+    our_file: "src/engine/constants/nccl.ts:14"
+    ref_file: "topo.h:24"
+
+  - name: BDW_QPI_BW
+    our_value: 6.0
+    our_file: "src/engine/constants/nccl.ts:15"
+    ref_file: "topo.h:25"
+
+  - name: SKL_QPI_BW
+    our_value: 10.0
+    our_file: "src/engine/constants/nccl.ts:16"
+    ref_file: "topo.h:26"
+
+  - name: SRP_QPI_BW
+    our_value: 22.0
+    our_file: "src/engine/constants/nccl.ts:17"
+    ref_file: "topo.h:27"
+
+  - name: ERP_QPI_BW
+    our_value: 40.0
+    our_file: "src/engine/constants/nccl.ts:18"
+    ref_file: "topo.h:28"
+
+  - name: ZPI_BW
+    our_value: 6.0
+    our_file: "src/engine/constants/nccl.ts:19"
+    ref_file: "topo.h:29"
+
+  - name: YONGFENG_ZPI_BW
+    our_value: 9.0
+    our_file: "src/engine/constants/nccl.ts:20"
+    ref_file: "topo.h:30"
+
+  - name: P9_BW
+    our_value: 32.0
+    our_file: "src/engine/constants/nccl.ts:21"
+    ref_file: "topo.h:31"
+
+  - name: ARM_BW
+    our_value: 6.0
+    our_file: "src/engine/constants/nccl.ts:22"
+    ref_file: "topo.h:32"
+
+  - name: NET_BW
+    our_value: 12.0
+    our_file: "src/engine/constants/nccl.ts:23"
+    ref_file: "topo.h:33"
+
+  - name: INTEL_P2P_OVERHEAD
+    our_value: "bw * 6/5"
+    our_file: "src/engine/constants/nccl.ts:26-28"
+    ref_file: "topo.h:37"
+
+  - name: MAXCHANNELS
+    our_value: 64
+    our_file: "src/engine/constants/nccl.ts:78"
+    ref_file: "device.h:86"
+
+  - name: NCCL_MAX_TREE_ARITY_TOP
+    our_value: 2
+    our_file: "src/engine/constants/nccl.ts:87"
+    ref_file: "device.h:185"
+
+  - name: NCCL_MAX_TREE_ARITY
+    our_value: 3
+    our_file: "src/engine/constants/nccl.ts:88"
+    ref_file: "device.h:187"
+
+  - name: SEARCH_GLOBAL_TIMEOUT
+    our_value: 524288
+    our_file: "src/engine/constants/nccl.ts:68"
+    ref_file: "search.cc:315"
+
+  - name: SEARCH_TIMEOUT
+    our_value: 16384
+    our_file: "src/engine/constants/nccl.ts:69"
+    ref_file: "search.cc:316"
+
+  - name: SEARCH_TIMEOUT_TREE
+    our_value: 16384
+    our_file: "src/engine/constants/nccl.ts:70"
+    ref_file: "search.cc:317"
+
+  - name: SEARCH_TIMEOUT_SAMECHANNELS
+    our_value: 256
+    our_file: "src/engine/constants/nccl.ts:71"
+    ref_file: "search.cc:318"
+
+  # Speed arrays
+  - name: speedArrayIntra
+    our_value: "[40, 30, 20, 18, 15, 12, 10, 9, 7, 6, 5, 4, 3]"
+    our_file: "src/engine/constants/nccl.ts:43"
+    ref_file: "search.cc:976"
+
+  - name: speedArrayInter
+    our_value: "[48, 30, 28, 24, 20, 18, 15, 12, 10, 9, 7, 6, 5, 4, 3, 2.4, 1.2, 0.24, 0.12]"
+    our_file: "src/engine/constants/nccl.ts:44"
+    ref_file: "search.cc:977"
+
+  - name: sm90SpeedArrayIntra
+    our_value: "[60, 50, 40, 30, 24, 20, 15, 12, 11, 6, 3]"
+    our_file: "src/engine/constants/nccl.ts:47"
+    ref_file: "search.cc:981"
+
+  - name: sm90SpeedArrayInter
+    our_value: "[48, 45, 42, 40, 30, 24, 22, 20, 17.5, 15, 12, 6, 3, 2.4, 1.2, 0.24, 0.12]"
+    our_file: "src/engine/constants/nccl.ts:48"
+    ref_file: "search.cc:982"
+
+  - name: sm100SpeedArrayIntra
+    our_value: "[90, 80, 70, 60, 50, 45, 40, 30, 24, 20, 19, 18]"
+    our_file: "src/engine/constants/nccl.ts:51"
+    ref_file: "search.cc:986"
+
+  - name: sm100SpeedArrayInter
+    our_value: "[96, 48, 45.1, 42, 40, 30, 24, 22, 20, 17.5, 15, 12, 6, 3, 2.4, 1.2, 0.24, 0.12]"
+    our_file: "src/engine/constants/nccl.ts:52"
+    ref_file: "search.cc:987"
+
+  # RCCL constants
+  - name: VEGA_XGMI_WIDTH
+    our_value: 24.0
+    our_file: "src/engine/constants/rccl.ts:6"
+    ref_file: "rccl topo.h:36"
+
+  - name: MI200_XGMI_WIDTH
+    our_value: 36.0
+    our_file: "src/engine/constants/rccl.ts:7"
+    ref_file: "rccl topo.h:37"
+
+  - name: GFX94X_XGMI_WIDTH
+    our_value: 48.0
+    our_file: "src/engine/constants/rccl.ts:8"
+    ref_file: "rccl topo.h:38"
+
+  - name: GFX95X_XGMI_WIDTH
+    our_value: 48.0
+    our_file: "src/engine/constants/rccl.ts:9"
+    ref_file: "rccl topo.h:39"
+
+# =============================================================================
+# Environment Variables — all NCCL/RCCL env vars with implementation status
+# =============================================================================
+env_vars:
+  # --- Topology ---
+  - name: NCCL_TOPO_FILE
+    default: null
+    type: string
+    ref_file: "topo.cc:1432"
+    category: topology
+    ui_knob: null
+    implemented: false
+    notes: "Load XML topology — not applicable to config-driven simulator"
+
+  - name: NCCL_GRAPH_FILE
+    default: null
+    type: string
+    ref_file: "search.cc:1049"
+    category: topology
+    ui_knob: null
+    implemented: false
+    notes: "Load pre-computed graph — not applicable to simulator"
+
+  - name: NCCL_TOPO_DUMP_FILE
+    default: null
+    type: string
+    ref_file: "topo.cc"
+    category: topology
+    ui_knob: null
+    implemented: false
+    notes: "Dump topology to XML — could add as export feature"
+
+  - name: NCCL_GRAPH_DUMP_FILE
+    default: null
+    type: string
+    ref_file: "search.cc:1272"
+    category: topology
+    ui_knob: null
+    implemented: false
+    notes: "Dump graph to XML — could add as export feature"
+
+  - name: NCCL_NVB_DISABLE
+    default: 0
+    type: int
+    ref_file: "paths.cc:34"
+    category: topology
+    ui_knob: null
+    implemented: true
+    notes: "Fully implemented in spfaFromSource GPU passthrough guard"
+
+  - name: NCCL_IGNORE_DISABLED_P2P
+    default: 0
+    type: int
+    ref_file: "paths.cc:255"
+    category: topology
+    ui_knob: null
+    implemented: false
+    notes: "Simulator always has full P2P — no disabled P2P to ignore"
+
+  - name: NCCL_PXN_DISABLE
+    default: 0
+    type: int
+    ref_file: "paths.cc:592"
+    category: topology
+    ui_knob: "Toolbar PXN toggle"
+    implemented: true
+    notes: "Fully implemented in applyPxnPaths"
+
+  - name: NCCL_PXN_C2C
+    default: 1
+    type: int
+    ref_file: "paths.cc:643"
+    category: topology
+    ui_knob: null
+    implemented: false
+    notes: "C2C path handling not yet implemented"
+
+  - name: NCCL_NET_DISABLE_INTRA
+    default: 0
+    type: int
+    ref_file: "paths.cc:533"
+    category: topology
+    ui_knob: null
+    implemented: false
+    notes: "Intra-node network disable not yet implemented"
+
+  # --- Channels ---
+  - name: NCCL_MIN_NCHANNELS
+    default: -2
+    type: int
+    ref_file: "search.cc"
+    category: channels
+    ui_knob: null
+    implemented: true
+    notes: "Used in init.ts channel bounds"
+
+  - name: NCCL_MAX_NCHANNELS
+    default: -2
+    type: int
+    ref_file: "search.cc"
+    category: channels
+    ui_knob: null
+    implemented: true
+    notes: "Used in init.ts channel bounds"
+
+  - name: NCCL_MIN_P2P_NCHANNELS
+    default: 1
+    type: int
+    ref_file: "paths.cc:859"
+    category: channels
+    ui_knob: null
+    implemented: false
+    notes: "P2P channel count not yet modeled"
+
+  - name: NCCL_MAX_P2P_NCHANNELS
+    default: 64
+    type: int
+    ref_file: "paths.cc:860"
+    category: channels
+    ui_knob: null
+    implemented: false
+    notes: "P2P channel count not yet modeled"
+
+  - name: NCCL_NVLS_NCHANNELS
+    default: -2
+    type: int
+    ref_file: "init.cc:55"
+    category: channels
+    ui_knob: null
+    implemented: false
+    notes: "NVLS not yet implemented"
+
+  # --- Transport ---
+  - name: NCCL_P2P_LEVEL
+    default: -2
+    type: int
+    ref_file: "paths.cc"
+    category: transport
+    ui_knob: null
+    implemented: false
+    notes: "P2P feasibility threshold not yet modeled"
+
+  - name: NCCL_P2P_DISABLE
+    default: 0
+    type: int
+    ref_file: "transport.cc"
+    category: transport
+    ui_knob: null
+    implemented: false
+    notes: "P2P transport disable not yet modeled"
+
+  - name: NCCL_SHM_DISABLE
+    default: 0
+    type: int
+    ref_file: "transport.cc"
+    category: transport
+    ui_knob: null
+    implemented: false
+    notes: "SHM transport disable not yet modeled"
+
+  - name: NCCL_P2P_PER_CHANNEL_NET_BW
+    default: 14
+    type: int
+    ref_file: "paths.cc:823"
+    category: transport
+    ui_knob: null
+    implemented: false
+    notes: "Per-channel network BW target not yet modeled"
+
+  # --- Network ---
+  - name: NCCL_CROSS_NIC
+    default: 2
+    type: int
+    ref_file: "search.cc:15"
+    category: network
+    ui_knob: null
+    implemented: true
+    notes: "Fully implemented in ncclTopoCompute search relaxation"
+
+  - name: NCCL_NET_GDR_LEVEL
+    default: -2
+    type: int
+    ref_file: "paths.cc"
+    category: network
+    ui_knob: null
+    implemented: false
+    notes: "GDR distance threshold not yet modeled"
+
+  - name: NCCL_NET_GDR_READ
+    default: -2
+    type: int
+    ref_file: "paths.cc:411"
+    category: network
+    ui_knob: null
+    implemented: false
+    notes: "GDR read support not yet modeled"
+
+  - name: NCCL_NET_GDR_C2C
+    default: 1
+    type: int
+    ref_file: "paths.cc:416"
+    category: network
+    ui_knob: null
+    implemented: false
+    notes: "GDR C2C not yet modeled"
+
+  - name: NCCL_NET_FORCE_FLUSH
+    default: 0
+    type: int
+    ref_file: "paths.cc:508"
+    category: network
+    ui_knob: null
+    implemented: false
+    notes: "Hopper GDR flush not modeled"
+
+  - name: NCCL_IB_DISABLE
+    default: 0
+    type: int
+    ref_file: "net.cc"
+    category: network
+    ui_knob: null
+    implemented: false
+    notes: "InfiniBand disable not applicable to simulator"
+
+  - name: NCCL_SOCKET_IFNAME
+    default: null
+    type: string
+    ref_file: "bootstrap.cc"
+    category: network
+    ui_knob: null
+    implemented: false
+    notes: "Network interface selection not applicable to simulator"
+
+  - name: NCCL_COLLNET_ENABLE
+    default: -2
+    type: int
+    ref_file: "init.cc:54"
+    category: network
+    ui_knob: null
+    implemented: false
+    notes: "CollNet not yet implemented"
+
+  - name: NCCL_NVLS_ENABLE
+    default: -2
+    type: int
+    ref_file: "init.cc"
+    category: network
+    ui_knob: null
+    implemented: false
+    notes: "NVLS not yet implemented"
+
+  - name: NCCL_MNNVL_SCATTER_NETS_ENABLE
+    default: 1
+    type: int
+    ref_file: "search.cc:507"
+    category: network
+    ui_knob: null
+    implemented: false
+    notes: "MNNVL scatter not yet implemented"
+
+  - name: NCCL_MNNVL_RAIL_PER_HOST
+    default: 0
+    type: int
+    ref_file: "search.cc:557"
+    category: network
+    ui_knob: null
+    implemented: false
+    notes: "MNNVL rail per host not yet implemented"
+
+  - name: NCCL_P2P_PXN_LEVEL
+    default: 2
+    type: int
+    ref_file: "search.cc:1315"
+    category: network
+    ui_knob: null
+    implemented: false
+    notes: "PXN level for P2P not yet modeled"
+
+  # --- Tuning ---
+  - name: NCCL_ALGO
+    default: -2
+    type: int
+    ref_file: "tuning.cc"
+    category: tuning
+    ui_knob: null
+    implemented: true
+    notes: "Force algorithm selection in selectAlgorithm"
+
+  - name: NCCL_PROTO
+    default: -2
+    type: int
+    ref_file: "tuning.cc"
+    category: tuning
+    ui_knob: null
+    implemented: true
+    notes: "Force protocol selection in selectAlgorithm"
+
+  - name: NCCL_NTHREADS
+    default: -2
+    type: int
+    ref_file: "tuning.cc"
+    category: tuning
+    ui_knob: null
+    implemented: true
+    notes: "Force thread count in computeThreadCount"
+
+  - name: NCCL_BUFFSIZE
+    default: -2
+    type: int
+    ref_file: "init.cc"
+    category: tuning
+    ui_knob: null
+    implemented: false
+    notes: "Buffer size not yet modeled"
+
+  - name: NCCL_THREAD_THRESHOLDS
+    default: null
+    type: string
+    ref_file: "tuning.cc:552"
+    category: tuning
+    ui_knob: null
+    implemented: false
+    notes: "Thread threshold override not yet modeled"
+
+  # --- Debug ---
+  - name: NCCL_DEBUG
+    default: null
+    type: string
+    ref_file: "debug.cc"
+    category: debug
+    ui_knob: null
+    implemented: false
+    notes: "Our DecisionLog replaces NCCL debug logging"
+
+  - name: NCCL_DEBUG_SUBSYS
+    default: null
+    type: string
+    ref_file: "debug.cc"
+    category: debug
+    ui_knob: null
+    implemented: false
+    notes: "Not applicable — DecisionLog has phase-based filtering"
+
+  - name: NCCL_DEBUG_FILE
+    default: null
+    type: string
+    ref_file: "debug.cc"
+    category: debug
+    ui_knob: null
+    implemented: false
+    notes: "Not applicable — logs shown in UI"
+
+  # --- RCCL-Specific ---
+  - name: RCCL_MODEL_MATCHING_DISABLE
+    default: 0
+    type: int
+    ref_file: "rome_models.cc"
+    category: rccl
+    ui_knob: null
+    implemented: true
+    notes: "Implemented in matchRomeModel"
+
+  - name: RCCL_MODEL_REVERSAL_DISABLE
+    default: 0
+    type: int
+    ref_file: "rome_models.cc:1811"
+    category: rccl
+    ui_knob: null
+    implemented: true
+    notes: "Implemented in Rome model ring parsing"
+
+  - name: RCCL_MSCCL_ENABLE
+    default: 1
+    type: int
+    ref_file: "msccl_lifecycle.cc"
+    category: rccl
+    ui_knob: null
+    implemented: false
+    notes: "MSCCL integration not applicable to simulator"
+
+  - name: RCCL_DUMP_ROME_MODEL_FILE
+    default: null
+    type: string
+    ref_file: "rome_models.cc:2320"
+    category: rccl
+    ui_knob: null
+    implemented: false
+    notes: "Topology dump — could add as export feature"
