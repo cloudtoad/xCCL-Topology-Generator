@@ -32,8 +32,9 @@ modules:
             rule: "PCI link touching CPU = PATH_PHB"
           - id: nvlink-bounce
             our_line: 124
-            ref_line: "98-99"
-            rule: "GPU→GPU via NVL with hopCount>1 and pathSoFar==NVL = PATH_NVB"
+            ref_line: 99
+            rule: "node.type==GPU && path.type==NVL && link.type==NVL && count>1 = PATH_NVB"
+            status: FIXED
           - id: default-link-to-path
             our_lines: "127-146"
             ref_line: "92-101"
@@ -98,9 +99,10 @@ modules:
             ref_line: "740-741"
             rule: "Peer must be on same node (always true for single-server)"
           - id: pxn-condition-better-bw
-            our_lines: "369-374"
+            our_lines: "369-371"
             ref_line: "742-743"
-            rule: "Peer has better BW to NIC or current path avoids CPU (type > PXN)"
+            rule: "peerBw > gpuBw || gpuType > PATH_PXN (peer has better BW or current goes through CPU)"
+            status: FIXED
 
       - name: computeAllPaths
         our_lines: "427-591"

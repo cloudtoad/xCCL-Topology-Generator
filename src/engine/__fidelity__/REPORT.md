@@ -5,9 +5,9 @@
 - Functions compared: 18
 - Constants verified: 28
 - Env vars audited: 35
-- Divergences found: 2 (critical: 0, moderate: 0, minor: 2)
+- Divergences found: 0
 - Missing features: 7
-- Fixed since baseline: 3 critical + 6 moderate + 1 minor divergences resolved
+- Fixed since baseline: 3 critical + 6 moderate + 3 minor divergences resolved
 
 ## Fixed Divergences (previously critical)
 | Module | Item | Fix | Commit |
@@ -27,11 +27,16 @@
 | search | sameChannels AMD exception | Now blocks `sameChannels=0` when `cpuArch==X86 && cpuVendor==AMD && typeIntra==PATH_SYS`. Matches search.cc:1131-1132. | This commit |
 | trees | getBtree algorithm | Replaced heap-style tree with NCCL's alternating-leaf bit-manipulation algorithm from trees.cc:31-65. Tree shapes now match exactly. | This commit |
 
+## Fixed Divergences (previously minor)
+| Module | Item | Fix | Commit |
+|--------|------|-----|--------|
+| paths | classifyHop NVB check | Removed extra `toNode.type==GPU` guard to match NCCL's `node->type==GPU && path->type==PATH_NVL` (paths.cc:99). | This commit |
+| paths | PXN condition 4 | Rewritten to match NCCL's positive form: `peerBw > gpuBw \|\| gpuType > PATH_PXN` (paths.cc:743). | This commit |
+| topo | interSocketBw Intel fallback | Changed default from `SKL_QPI_BW` to `BDW_QPI_BW` matching NCCL (topo.cc:95). | f5cd4ea |
+
 ## Remaining Divergences
-| Module | Item | Ours | NCCL | Severity | Notes |
-|--------|------|------|------|----------|-------|
-| paths | classifyHop NVB check | Checks `fromNode.type==GPU && toNode.type==GPU` | Checks `node->type==GPU && path->type==PATH_NVL` (no toNode type guard) | Minor | NCCL does not guard on remNode being GPU for NVB classification; the NVL link type already implies GPU-GPU. Ours is stricter but functionally equivalent for valid topologies. |
-| paths | PXN condition comparison | `peerToNicPath.bandwidth <= gpuToNicPath.bandwidth AND gpuToNicPath.type <= PathType.PXN` | `peerNode->paths[NET][n].bw > gpu->paths[NET][n].bw OR gpu->paths[NET][n].type > PATH_PXN` | Minor | Logically equivalent (De Morgan's law), just expressed differently. |
+
+None. All decision points in the engine now match the NCCL reference source.
 
 ## Missing Features
 | NCCL Feature | Source Location | Priority | Notes |
@@ -128,11 +133,11 @@ The hop classification logic follows the same priority cascade as NCCL:
 1. NET links -> LOC (line 105 vs ref line 93): MATCH
 2. PCI->PCI -> PXB (line 108 vs ref line 95): MATCH
 3. PCI touching CPU -> PHB (line 113 vs ref line 97): MATCH
-4. NVLink bounce -> NVB (line 124 vs ref lines 98-99): Our version additionally guards on `fromNode.type == GPU && toNode.type == GPU` which NCCL does not. This is stricter but safe since NVL links only exist between GPUs/NVSwitches.
+4. NVLink bounce -> NVB (line 124 vs ref line 99): MATCH. Checks `node.type==GPU && path.type==NVL && link.type==NVL && count>1`.
 5. Default link-to-path mapping (lines 127-146 vs ref lines 92-101): MATCH
 6. max(pathSoFar, hopType) (line 150 vs ref line 101): MATCH
 
-**Divergence**: The NVB detection at line 124 checks `fromNode.type === NodeType.GPU && toNode.type === NodeType.GPU` but NCCL only checks `node->type == GPU` (the current node is GPU). This is functionally equivalent because NVB routing only occurs GPU-to-GPU, but the extra guard is redundant.
+NVB detection now matches NCCL exactly: `fromNode.type == GPU && pathSoFar == NVL && linkType == NVL && hopCount > 1` (paths.cc:99).
 
 **spfaFromSource** (paths.ts:172-293 <-> paths.cc:36-113)
 

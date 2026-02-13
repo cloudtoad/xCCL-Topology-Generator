@@ -108,13 +108,12 @@ function classifyHop(
     hopType = PathType.PHB
   } else if (
     fromNode.type === NodeType.GPU &&
-    toNode.type === NodeType.GPU &&
     pathSoFar === PathType.NVL &&
     linkType === LinkType.NVL &&
     hopCount > 1
   ) {
-    // NVLink bounce: GPU->GPU via intermediate GPU with NVLink on both sides
-    // (paths.cc:95-96)
+    // NVLink bounce: GPU traversal with NVL path and NVL link, count > 1
+    // (paths.cc:99)
     hopType = PathType.NVB
   } else {
     // Default mapping from link type to path type (paths.cc:97-101)
@@ -360,11 +359,8 @@ function applyPxnPaths(
 
       // Condition 3: same node (always true for single-server)
 
-      // Condition 4: either better BW or current path avoids CPU
-      if (
-        peerToNicPath.bandwidth <= gpuToNicPath.bandwidth &&
-        gpuToNicPath.type <= PathType.PXN
-      ) {
+      // Condition 4 (paths.cc:742-743): peer has better BW to NIC or current path goes through CPU
+      if (!(peerToNicPath.bandwidth > gpuToNicPath.bandwidth || gpuToNicPath.type > PathType.PXN)) {
         continue
       }
 
