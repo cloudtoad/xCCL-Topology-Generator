@@ -578,6 +578,11 @@ export function ncclTopoCompute(
   const typeIntraMax = intraRange.maxType
   const typeInterMax = interRange.maxType
 
+  // --- Determine CPU arch/vendor for AMD sameChannels exception (search.cc:1131-1132) ---
+  const cpuNodes = system.nodesByType.get(NodeType.CPU) ?? []
+  const cpuArch = cpuNodes.length > 0 && cpuNodes[0].cpu ? cpuNodes[0].cpu.arch : CPUArch.X86
+  const cpuVendor = cpuNodes.length > 0 && cpuNodes[0].cpu ? cpuNodes[0].cpu.vendor : CPUVendor.INTEL
+
   log.emit(
     'searchInit',
     `Intra path type range: ${typeIntra}-${typeIntraMax}, Inter: ${typeInter}-${typeInterMax}`,
@@ -601,17 +606,20 @@ export function ncclTopoCompute(
     { speedArray: [...speedArray], ccMin, isInter: system.inter },
   )
 
-  // --- Find starting speed index (search.cc:1096-1106) ---
-  // Start at the first speed that is <= maxBw and where
-  // speed * nGpus <= totalBw (for rings, each link carries speed)
+  // --- Find starting speed index (search.cc:1096-1101) ---
+  // Tree patterns adjust totalBw upward: totalBw *= ngpus/(ngpus-1) (search.cc:1100)
+  // because trees have N-1 edges vs rings' N edges.
+  let totalBw = system.totalBw
+  if (nGpus > 1 && patternNum !== NCCL_TOPO_PATTERN_RING) {
+    totalBw *= nGpus / (nGpus - 1)
+  }
+  // Advance speed index while speed exceeds maxBw or speed*minChannels exceeds totalBw (search.cc:1101)
   let speedIndex = 0
-  for (let i = 0; i < speedArray.length; i++) {
-    const s = speedArray[i]
-    if (s <= system.maxBw && s * nGpus <= system.totalBw) {
-      speedIndex = i
-      break
-    }
-    speedIndex = i // keep advancing if nothing fits yet
+  while (
+    speedIndex < speedArray.length - 1 &&
+    (speedArray[speedIndex] > system.maxBw || speedArray[speedIndex] * minChannels > totalBw)
+  ) {
+    speedIndex++
   }
 
   // Clamp channels
@@ -737,7 +745,10 @@ export function ncclTopoCompute(
       // --- Relaxation cascade (search.cc:1140-1180) ---
 
       // (a) Try sameChannels=0 — allow different orderings per channel
-      if (sameChannels === 1) {
+      // AMD exception (search.cc:1131-1132): block sameChannels=0 when
+      // AMD x86 CPU with SYS-level intra paths (dual-socket AMD)
+      if (sameChannels === 1 &&
+          !(cpuArch === CPUArch.X86 && cpuVendor === CPUVendor.AMD && localTypeIntra === PathType.SYS)) {
         sameChannels = 0
         log.emit(
           'ringSearch',
@@ -825,6 +836,58 @@ export function ncclTopoCompute(
           [],
           { prevSpeed: speedArray[si - 1], newSpeed: speedArray[si] },
         )
+      }
+    }
+  }
+
+  // =========================================================================
+  // DupChannels — double channels when bandwidth allows (search.cc:961-974)
+  // =========================================================================
+
+  if (bestResult && bestResult.nChannels > 0) {
+    const bwIntra = bestResult.speedIntra
+    // Skip NVLS pattern (not implemented, but guard for future)
+    // Skip if bwIntra < 25.0
+    if (bwIntra >= 25.0) {
+      // Skip if ccMin > 80 && bwIntra < 50 && nChannels > 4 (search.cc:965)
+      const skipDup = ccMin > 80 && bwIntra < 50.0 && bestResult.nChannels > 4
+      if (!skipDup) {
+        const dupChannels = Math.min(bestResult.nChannels * 2, maxChannels)
+        if (dupChannels > bestResult.nChannels) {
+          // Duplicate channels: copy ring orderings, halve bandwidth (search.cc:967-972)
+          const origChannels = bestResult.channels
+          const newChannels: GraphChannel[] = [...origChannels]
+          for (let c = origChannels.length; c < dupChannels; c++) {
+            const srcCh = origChannels[c - origChannels.length]
+            newChannels.push({
+              id: c,
+              bandwidth: srcCh.bandwidth,
+              ringOrder: [...srcCh.ringOrder],
+            })
+          }
+
+          // DIVUP(dupChannels, origNChannels) — ceiling division for BW scaling (search.cc:970)
+          const divup = Math.ceil(dupChannels / bestResult.nChannels)
+          const newBwIntra = bwIntra / divup
+          const newBwInter = bestResult.speedInter / divup
+
+          log.emit(
+            'ringSearch',
+            `DupChannels: ${bestResult.nChannels} -> ${dupChannels} channels, bw ${bwIntra} -> ${newBwIntra}`,
+            `Channel duplication for high-bandwidth topology (bwIntra=${bwIntra} >= 25.0)`,
+            'search.cc:961',
+            [],
+            { origChannels: bestResult.nChannels, dupChannels, origBw: bwIntra, newBw: newBwIntra },
+          )
+
+          bestResult = {
+            ...bestResult,
+            nChannels: dupChannels,
+            channels: newChannels,
+            speedIntra: newBwIntra,
+            speedInter: newBwInter,
+          }
+        }
       }
     }
   }

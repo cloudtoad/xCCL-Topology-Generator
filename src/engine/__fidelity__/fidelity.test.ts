@@ -649,46 +649,107 @@ describe('tree channels from rings', () => {
   })
 })
 
-describe('ncclGetDtree (trees.cc:88-109)', () => {
+describe('ncclGetDtree (trees.cc:88-109) — alternating-leaf btree', () => {
   test('double tree for 4 ranks (even)', () => {
+    // NCCL alternating-leaf btree for 4 ranks:
+    //   0---2
+    //      / \
+    //     1   3
+    // Rank 0: root — up=-1, d0=-1, d1=1 (bit=1 for rank 0, d1=bit>>1=0? No...)
+    // Actually for nranks=4, rank=0: bit starts at 1, loops until bit&rank or bit>=nranks.
+    // bit=1: 1&0=0, bit=2: 2&0=0, bit=4: 4>=4 break. bit=4.
+    // rank==0: up=-1, d0=-1, d1 = nranks>1 ? bit>>1 : -1 = 4>>1 = 2
     const { tree0, tree1 } = ncclGetDtree(4, 0)
-    // Rank 0: root of tree0
     expect(tree0.up).toBe(-1)
-    expect(tree0.down0).toBe(1)
+    expect(tree0.down0).toBe(-1)
     expect(tree0.down1).toBe(2)
 
     // Tree1 for even nRanks: mirror rank = 4-1-0 = 3
-    // getBtree(4, 3): up=floor((3-1)/2)=1, left=7(>=4→-1), right=8(>=4→-1)
-    // Then mirror: up=4-1-1=2
-    expect(tree1.up).toBe(2)
-    expect(tree1.down0).toBe(-1)
-    expect(tree1.down1).toBe(-1)
-  })
-
-  test('double tree for 3 ranks (odd)', () => {
-    const { tree0, tree1 } = ncclGetDtree(3, 0)
-    // Tree0 rank 0: root
-    expect(tree0.up).toBe(-1)
-    expect(tree0.down0).toBe(1)
-    expect(tree0.down1).toBe(2)
-
-    // Tree1 for odd nRanks: shift rank = (0-1+3)%3 = 2
-    // getBtree(3, 2): up=floor((2-1)/2)=0, left=5(>=3→-1), right=6(>=3→-1)
-    // Then shift: up=(0+1)%3=1
+    // getBtree(4, 3): bit=1 (1&3=1, break). up=(3^1)|(1<<1)=2|2=2. 2<4 ok. up=2.
+    // lowbit=0. down0=-1, down1=-1.
+    // Mirror: up=4-1-2=1
     expect(tree1.up).toBe(1)
     expect(tree1.down0).toBe(-1)
     expect(tree1.down1).toBe(-1)
   })
 
-  test('8 ranks: all ranks have either up or are root', () => {
+  test('double tree for 3 ranks (odd)', () => {
+    // NCCL btree for 3 ranks:
+    //   0---2
+    //      /
+    //     1
+    // rank 0: bit loops 1,2,4(>=3 break). bit=4. root: up=-1,d0=-1,d1=4>>1=2
+    const { tree0, tree1 } = ncclGetDtree(3, 0)
+    expect(tree0.up).toBe(-1)
+    expect(tree0.down0).toBe(-1)
+    expect(tree0.down1).toBe(2)
+
+    // Tree1 for odd nRanks: shift rank = (0-1+3)%3 = 2
+    // getBtree(3, 2): bit=1(1&2=0), bit=2(2&2=2 break). up=(2^2)|(2<<1)=0|4=4. 4>=3, up=2^2=0.
+    // lowbit=1. down0=2-1=1. down1=2+1=3. 3>=3: lowbit>>=1->0. down1=0==0?-1.
+    // Shift: up=(0+1)%3=1, d0=(1+1)%3=2, d1=-1
+    expect(tree1.up).toBe(1)
+    expect(tree1.down0).toBe(2)
+    expect(tree1.down1).toBe(-1)
+  })
+
+  test('8 ranks: NCCL alternating-leaf tree structure', () => {
+    // NCCL trees.cc diagram for 8 ranks:
+    //   0---------------8 (but 8>=nranks, so only 0-7)
+    //          ______/ \
+    //         4         \
+    //       /   \        \
+    //     2       6       \
+    //    / \     / \
+    //   1   3   5   7
+    //
+    // Rank 0: root, d1=4 (bit=8, d1=8>>1=4)
+    const { tree0 } = ncclGetDtree(8, 0)
+    expect(tree0.up).toBe(-1)
+    expect(tree0.down0).toBe(-1)
+    expect(tree0.down1).toBe(4)
+
+    // Rank 4: bit=4(4&4=4 break). up=(4^4)|(4<<1)=0|8=8. 8>=8, up=4^4=0.
+    // lowbit=2. down0=4-2=2. down1=4+2=6. 6<8 ok.
+    const r4 = ncclGetDtree(8, 4)
+    expect(r4.tree0.up).toBe(0)
+    expect(r4.tree0.down0).toBe(2)
+    expect(r4.tree0.down1).toBe(6)
+
+    // Rank 2: bit=2(2&2=2 break). up=(2^2)|(2<<1)=0|4=4. 4<8 ok.
+    // lowbit=1. down0=2-1=1. down1=2+1=3. 3<8 ok.
+    const r2 = ncclGetDtree(8, 2)
+    expect(r2.tree0.up).toBe(4)
+    expect(r2.tree0.down0).toBe(1)
+    expect(r2.tree0.down1).toBe(3)
+
+    // Rank 1: bit=1(1&1=1 break). up=(1^1)|(1<<1)=0|2=2. 2<8 ok.
+    // lowbit=0. down0=-1. down1=-1. Leaf.
+    const r1 = ncclGetDtree(8, 1)
+    expect(r1.tree0.up).toBe(2)
+    expect(r1.tree0.down0).toBe(-1)
+    expect(r1.tree0.down1).toBe(-1)
+
+    // All ranks have up=-1 only for rank 0
     for (let r = 0; r < 8; r++) {
-      const { tree0, tree1 } = ncclGetDtree(8, r)
-      // Each rank should have a role in both trees
-      // Root has up=-1, non-root has up>=0
-      if (tree0.up === -1) {
-        expect(r).toBe(0) // Only rank 0 is root of tree0
+      const { tree0: t0 } = ncclGetDtree(8, r)
+      if (t0.up === -1) {
+        expect(r).toBe(0)
       }
     }
+  })
+
+  test('14 ranks: NCCL tree handles non-power-of-2', () => {
+    // Rank 0: root
+    const r0 = ncclGetDtree(14, 0)
+    expect(r0.tree0.up).toBe(-1)
+
+    // Rank 12: bit=4(4&12=4 break). up=(12^4)|(4<<1)=8|8=8. 8<14 ok.
+    // lowbit=2. down0=12-2=10. down1=12+2=14. 14>=14: lowbit=1. down1=12+1=13. 13<14 ok.
+    const r12 = ncclGetDtree(14, 12)
+    expect(r12.tree0.up).toBe(8)
+    expect(r12.tree0.down0).toBe(10)
+    expect(r12.tree0.down1).toBe(13)
   })
 })
 

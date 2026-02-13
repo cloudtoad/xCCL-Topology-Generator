@@ -17,7 +17,7 @@ import { NodeType, LinkType, PathType } from './types'
 import { LOC_BW } from './constants/nccl'
 import { DecisionLog } from './decision-log'
 import type { EnvConfig } from './env'
-import { getEnvInt } from './env'
+import { getEnvInt, getEnvValue } from './env'
 
 // =============================================================================
 // Internal helpers
@@ -310,6 +310,11 @@ function applyPxnPaths(
 
   if (gpuNodes.length === 0 || nicNodes.length === 0) return
 
+  // PXN C2C threshold (paths.cc:735): when NCCL_PXN_C2C is enabled (default=1),
+  // allow P2C paths for PXN proxy. Otherwise, require PXB or better.
+  const pxnC2c = getEnvInt(env, 'NCCL_PXN_C2C') !== 0
+  const pxnType = pxnC2c ? PathType.P2C : PathType.PXB
+
   let pxnCount = 0
 
   for (const nic of nicNodes) {
@@ -343,10 +348,10 @@ function applyPxnPaths(
       const gpuToNicPath = system.paths.get(gpuToNicKey)
       if (!gpuToNicPath) continue
 
-      // Condition 1: peer (localGpu) connected to NIC with PXB or better
+      // Condition 1: peer (localGpu) connected to NIC with pxnType or better (paths.cc:735-737)
       const peerToNicKey = `${localGpu.id}->${nic.id}`
       const peerToNicPath = system.paths.get(peerToNicKey)
-      if (!peerToNicPath || peerToNicPath.type > PathType.PXB) continue
+      if (!peerToNicPath || peerToNicPath.type > pxnType) continue
 
       // Condition 2: peer connected to this GPU through NVLink
       const peerToGpuKey = `${localGpu.id}->${gpu.id}`

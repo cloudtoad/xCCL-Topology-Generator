@@ -20,7 +20,11 @@ import { GraphPattern } from './types'
 import { DecisionLog } from './decision-log'
 
 // =============================================================================
-// ncclGetBtree — standard binary tree for nRanks ranks (trees.cc:18-86)
+// ncclGetBtree — alternating-leaf binary tree (trees.cc:31-65)
+//
+// Bit-manipulation algorithm that alternates leaves and internal nodes.
+// Root is rank 0. The tree structure differs from a textbook heap-style tree.
+// See trees.cc:11-30 for the diagram.
 //
 // Used for INTER-NODE tree construction (one rank per node).
 // NOT used for intra-node — intra-node always uses chains.
@@ -29,25 +33,39 @@ function getBtree(
   nRanks: number,
   rank: number,
 ): { up: number; down0: number; down1: number } {
-  let up = -1
-  let down0 = -1
-  let down1 = -1
-
   if (nRanks < 1) {
-    return { up, down0, down1 }
+    return { up: -1, down0: -1, down1: -1 }
   }
 
+  // Find first set bit (trees.cc:34-36)
+  let bit = 1
+  while (bit < nRanks) {
+    if (bit & rank) break
+    bit <<= 1
+  }
+
+  // Root (rank 0): no parent, d0=-1, d1=first child (trees.cc:38-44)
   if (rank === 0) {
-    up = -1
-  } else {
-    up = Math.floor((rank - 1) / 2)
+    return {
+      up: -1,
+      down0: -1,
+      down1: nRanks > 1 ? bit >> 1 : -1,
+    }
   }
 
-  const leftChild = 2 * rank + 1
-  const rightChild = 2 * rank + 2
+  // Parent (trees.cc:46-50)
+  let up = (rank ^ bit) | (bit << 1)
+  if (up >= nRanks) up = rank ^ bit
 
-  down0 = leftChild < nRanks ? leftChild : -1
-  down1 = rightChild < nRanks ? rightChild : -1
+  // Children (trees.cc:52-61)
+  let lowbit = bit >> 1
+  const down0 = lowbit === 0 ? -1 : rank - lowbit
+
+  let down1 = lowbit === 0 ? -1 : rank + lowbit
+  while (down1 >= nRanks) {
+    lowbit >>= 1
+    down1 = lowbit === 0 ? -1 : rank + lowbit
+  }
 
   return { up, down0, down1 }
 }

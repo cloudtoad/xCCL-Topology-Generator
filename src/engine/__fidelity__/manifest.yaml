@@ -84,10 +84,11 @@ modules:
             our_lines: "328-344"
             ref_line: 730
             rule: "Find GPU with best direct path to NIC (ncclTopoGetLocalGpu)"
-          - id: pxn-condition-pxb
+          - id: pxn-condition-pxntype
             our_line: 359
-            ref_line: "736-737"
-            rule: "Peer must be connected to NIC with PXB or better"
+            ref_line: "735-737"
+            rule: "Peer must be connected to NIC with pxnType or better (pxnType = PXN_C2C ? P2C : PXB)"
+            status: FIXED
           - id: pxn-condition-nvl
             our_line: 364
             ref_line: "738-739"
@@ -193,8 +194,9 @@ modules:
             rule: "AMD → AMD_BW (16.0)"
           - id: zhaoxin-bw
             our_line: 53
-            ref_line: 29
-            rule: "Zhaoxin → ZPI_BW (6.0)"
+            ref_line: "29-30"
+            rule: "Zhaoxin → Yongfeng(model=1)=YONGFENG_ZPI_BW(9.0), else ZPI_BW(6.0)"
+            status: FIXED
           - id: intel-model-bw
             our_lines: "56-62"
             ref_lines: "25-28"
@@ -221,15 +223,22 @@ modules:
             ref_lines: "976-989"
             rule: "Speed arrays selected by compute capability and inter/intra"
           - id: starting-speed-index
-            our_lines: "555-563"
-            ref_lines: "1096-1106"
-            rule: "Start at first speed where s<=maxBw and s*nGpus<=totalBw"
+            our_lines: "607-615"
+            ref_lines: "1096-1101"
+            rule: "Advance while speed>maxBw || speed*minChannels>totalBw. Tree patterns adjust totalBw *= ngpus/(ngpus-1)"
+            status: FIXED
           - id: phase1-relaxation
             our_lines: "596-771"
             ref_lines: "1108-1190"
             rule: "Relax: sameChannels→0, pattern, typeIntra++, typeInter++, crossNic"
+          - id: dup-channels
+            our_lines: "850-900"
+            ref_lines: "961-974"
+            ref_function: ncclTopoDupChannels
+            rule: "Double channels when bwIntra>=25.0, with ccMin/bwIntra/nChannels guards"
+            status: FIXED
           - id: phase2-optimize
-            our_lines: "777-844"
+            our_lines: "900-960"
             ref_lines: "1192-1230"
             rule: "Try higher speeds to improve total bandwidth"
 
@@ -279,16 +288,27 @@ modules:
     functions:
       - name: getBtree
         our_lines: "28-53"
-        ref_lines: "18-86"
+        ref_lines: "31-65"
         ref_function: ncclGetBtree
-        description: "Standard binary tree for inter-node tree construction"
+        description: "Alternating-leaf binary tree using bit manipulation (trees.cc:31-65)"
+        status: FIXED
         decisions:
-          - id: root-has-no-parent
-            our_line: 41
-            rule: "rank 0 → up = -1"
-          - id: binary-children
-            our_lines: "46-50"
-            rule: "left = 2*rank+1, right = 2*rank+2"
+          - id: find-first-bit
+            our_lines: "41-45"
+            ref_lines: "34-36"
+            rule: "Find first set bit in rank"
+          - id: root-special-case
+            our_lines: "48-52"
+            ref_lines: "38-44"
+            rule: "rank 0: up=-1, d0=-1, d1=bit>>1"
+          - id: parent-calculation
+            our_lines: "55-56"
+            ref_lines: "46-49"
+            rule: "up = (rank^bit)|(bit<<1), clamp if >=nranks"
+          - id: children-calculation
+            our_lines: "59-63"
+            ref_lines: "52-61"
+            rule: "down0=rank-lowbit, down1=rank+lowbit with bounds clamping"
 
       - name: ncclGetDtree
         our_lines: "62-92"
@@ -711,8 +731,8 @@ env_vars:
     ref_file: "paths.cc:643"
     category: topology
     ui_knob: null
-    implemented: false
-    notes: "C2C path handling not yet implemented"
+    implemented: true
+    notes: "Used in applyPxnPaths to set PXN threshold (P2C vs PXB)"
 
   - name: NCCL_NET_DISABLE_INTRA
     default: 0

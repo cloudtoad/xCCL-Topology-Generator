@@ -5,29 +5,33 @@
 - Functions compared: 18
 - Constants verified: 28
 - Env vars audited: 35
-- Divergences found: 9 (critical: 0, moderate: 6, minor: 3)
-- Missing features: 8
-- Fixed since baseline: 3 critical divergences resolved
+- Divergences found: 2 (critical: 0, moderate: 0, minor: 2)
+- Missing features: 7
+- Fixed since baseline: 3 critical + 6 moderate + 1 minor divergences resolved
 
 ## Fixed Divergences (previously critical)
 | Module | Item | Fix | Commit |
 |--------|------|-----|--------|
-| paths | domination check | Changed from pathType-based to count+bw based domination matching paths.cc:73. PathType now computed after domination check. | This commit |
-| paths | SPFA vs layered BFS | Replaced flat FIFO queue with layered BFS (currentLayer/nextLayer) matching NCCL's nodeList/nextNodeList alternation (paths.cc:52-110). | This commit |
-| paths | Intel P2P overhead | Removed from SPFA path computation. Now applied during search-phase bandwidth consumption via `effectiveCost()` in search.ts, matching NCCL's followPath (search.cc:79-91). | This commit |
+| paths | domination check | Changed from pathType-based to count+bw based domination matching paths.cc:73. PathType now computed after domination check. | f166baa |
+| paths | SPFA vs layered BFS | Replaced flat FIFO queue with layered BFS (currentLayer/nextLayer) matching NCCL's nodeList/nextNodeList alternation (paths.cc:52-110). | f166baa |
+| paths | Intel P2P overhead | Removed from SPFA path computation. Now applied during search-phase bandwidth consumption via `effectiveCost()` in search.ts, matching NCCL's followPath (search.cc:79-91). | f166baa |
+
+## Fixed Divergences (previously moderate)
+| Module | Item | Fix | Commit |
+|--------|------|-----|--------|
+| paths | PXN pxnType threshold | Now reads `NCCL_PXN_C2C` env var (default=1) and uses `pxnC2c ? PATH_P2C : PATH_PXB` matching paths.cc:735. | This commit |
+| topo | interSocketBw Zhaoxin handling | Added Yongfeng model check: `model === 1 ? YONGFENG_ZPI_BW : ZPI_BW` matching topo.cc:92. | This commit |
+| topo | interSocketBw Intel fallback | Changed default from `SKL_QPI_BW` to `BDW_QPI_BW` matching NCCL's fallthrough default (topo.cc:95). | This commit |
+| search | ncclTopoCompute starting speed | Now uses `minChannels` instead of `nGpus` for totalBw check. Added tree-adjusted `totalBw *= ngpus/(ngpus-1)` for non-RING patterns. Matches search.cc:1100-1101. | This commit |
+| search | DupChannels optimization | Implemented `ncclTopoDupChannels` between Phase 1 and Phase 2. Doubles channels when bwIntra >= 25.0, with ccMin/bwIntra/nChannels guards. Matches search.cc:961-974. | This commit |
+| search | sameChannels AMD exception | Now blocks `sameChannels=0` when `cpuArch==X86 && cpuVendor==AMD && typeIntra==PATH_SYS`. Matches search.cc:1131-1132. | This commit |
+| trees | getBtree algorithm | Replaced heap-style tree with NCCL's alternating-leaf bit-manipulation algorithm from trees.cc:31-65. Tree shapes now match exactly. | This commit |
 
 ## Remaining Divergences
 | Module | Item | Ours | NCCL | Severity | Notes |
 |--------|------|------|------|----------|-------|
 | paths | classifyHop NVB check | Checks `fromNode.type==GPU && toNode.type==GPU` | Checks `node->type==GPU && path->type==PATH_NVL` (no toNode type guard) | Minor | NCCL does not guard on remNode being GPU for NVB classification; the NVL link type already implies GPU-GPU. Ours is stricter but functionally equivalent for valid topologies. |
 | paths | PXN condition comparison | `peerToNicPath.bandwidth <= gpuToNicPath.bandwidth AND gpuToNicPath.type <= PathType.PXN` | `peerNode->paths[NET][n].bw > gpu->paths[NET][n].bw OR gpu->paths[NET][n].type > PATH_PXN` | Minor | Logically equivalent (De Morgan's law), just expressed differently. |
-| paths | PXN pxnType threshold | Always uses `PATH_PXB` | Uses `ncclParamPxnC2c() ? PATH_P2C : PATH_PXB` | Moderate | We always check against PXB. NCCL uses P2C when PXN_C2C is enabled (default=1), meaning on C2C systems our PXN is more restrictive. |
-| topo | interSocketBw Zhaoxin handling | Always returns `ZPI_BW` for Zhaoxin | Returns `YONGFENG_ZPI_BW` if model is Yongfeng, else `ZPI_BW` | Moderate | We don't distinguish the Yongfeng Zhaoxin model (9.0 GB/s vs 6.0 GB/s). |
-| topo | interSocketBw fallback for x86+Intel | No `YONGFENG_ZPI_BW` path; default fallback is SKL | NCCL falls through to BDW_QPI_BW as default for unknown Intel models | Minor | Our default for unknown Intel is SKL (10.0) while NCCL defaults to BDW (6.0). |
-| search | ncclTopoCompute starting speed | `s <= system.maxBw && s * nGpus <= system.totalBw` | `speedArray[speedIndex] > maxBw || speedArray[speedIndex]*graph->minChannels > totalBw` then speedIndex++ | Moderate | NCCL uses `minChannels` (not nGpus) for the totalBw check, and uses tree-adjusted totalBw when pattern is not RING (`totalBw *= ngpus/(ngpus-1)`). Ours always uses `nGpus` and never adjusts totalBw for tree patterns. |
-| search | DupChannels optimization | Not implemented | `ncclTopoDupChannels` doubles channels when bwIntra >= 25.0 with conditions on CC and nChannels | Moderate | NCCL can duplicate channels after Phase 1 to increase total bandwidth before Phase 2. We skip this optimization, potentially finding fewer channels at lower speeds. |
-| search | sameChannels AMD exception | Always allows `sameChannels=0` relaxation | Blocks `sameChannels=0` when `cpuArch==X86 && cpuVendor==AMD && typeIntra==PATH_SYS` | Moderate | NCCL avoids different channel orderings on AMD systems going through SYS links. We always relax, which could produce suboptimal ring orderings on AMD dual-socket. |
-| trees | getBtree algorithm | Simple `parent = floor((rank-1)/2), left = 2*rank+1, right = 2*rank+2` | Bit-manipulation alternating-leaf btree with different structure | Moderate | Our binary tree is a textbook heap-style tree. NCCL uses a specialized alternating-leaf construction that places leaves and internal nodes differently (see trees.cc:11-30 diagram). The resulting tree shapes differ for nranks > 3. This affects inter-node tree topology when cluster mode is used. |
 
 ## Missing Features
 | NCCL Feature | Source Location | Priority | Notes |
@@ -37,7 +41,6 @@
 | PAT algorithm | tuning.cc:201-209 | Medium | Parallel Alltoall Trees not implemented. SM60+ feature for ReduceScatter/AllGather. |
 | GDR checks | paths.cc:418-485 | Medium | GPU Direct RDMA feasibility checks not modeled. Affects NIC-GPU path selection in multi-node setups. |
 | P2P transport checks | paths.cc:270-388 | Low | NVML-based P2P validation not modeled. Simulator assumes all P2P paths work. |
-| Channel duplication | search.cc:961-974 | Medium | `ncclTopoDupChannels` not implemented. Can significantly increase channel count for high-bandwidth systems. |
 | Split NVLink detection | paths.cc:971-1002 | Low | `ncclTopoSplitNvLink` not implemented. Affects minimum channel count on dual-socket NVLink systems. |
 | mergePathType P2C | paths.cc:178-183 | Low | `PATH_P2C = max(PATH_PHB, PATH_C2C)` merge not implemented. C2C path handling incomplete. |
 
@@ -78,7 +81,7 @@
 |-----|-----------|-------------|---------|-------|
 | NCCL_NVB_DISABLE | YES (0) | YES | - | Used in spfaFromSource GPU passthrough guard |
 | NCCL_PXN_DISABLE | YES (0) | YES | Toolbar toggle | Used in applyPxnPaths |
-| NCCL_PXN_C2C | YES (1) | NO | - | Missing: C2C path handling not implemented |
+| NCCL_PXN_C2C | YES (1) | YES | - | Used in applyPxnPaths to set PXN threshold (P2C vs PXB) |
 | NCCL_CROSS_NIC | YES (2) | YES | - | Used in ncclTopoCompute relaxation |
 | NCCL_MIN_NCHANNELS | YES (-2) | YES | - | Used in init.ts channel bounds |
 | NCCL_MAX_NCHANNELS | YES (-2) | YES | - | Used in init.ts channel bounds |
@@ -133,22 +136,22 @@ The hop classification logic follows the same priority cascade as NCCL:
 
 **spfaFromSource** (paths.ts:172-293 <-> paths.cc:36-113)
 
-- Source initialization (lines 184-186 vs ref lines 48-50): PathType.LOC, bw=LOC_BW(5000)/Infinity, count=0. Our bw is Infinity rather than LOC_BW for the source self-path. **Minor difference**: NCCL sets `basePath->bw = LOC_BW`, we set Infinity. This does not matter because the self-path BW is never used in search.
+- Source initialization (lines 184-186 vs ref lines 48-50): PathType.LOC, bw=LOC_BW(5000), count=0. MATCH.
 
 - GPU passthrough guard (lines 209-221 vs ref lines 69-71): MATCH. Both check `nvbDisabled || link.type != NVL || remNode.type != GPU || path.count > 1`.
 
-- **Critical divergence**: Domination check. Our code (lines 260-269) uses pathType-based domination: a new path is dominated if it has a worse pathType, or same pathType with no better bandwidth. NCCL (line 73) uses: `(remPath->bw == 0 || remPath->count > path->count) && remPath->bw < bw`. NCCL checks hop count and bandwidth, NOT pathType. PathType is set AFTER the domination check in NCCL. This means NCCL prefers shorter paths with higher bandwidth regardless of path type, while ours prefers better path types.
+- Domination check (lines 230-242 vs ref line 73): MATCH. Uses count+bw based domination: `(existing.bw == 0 || existing.count > current.count) && existing.bw < newBw`. PathType computed after domination check.
 
-- **Critical divergence**: BFS structure. NCCL uses layered BFS (`nodeList`/`nextNodeList` alternation at line 110) which processes all nodes at the current depth before advancing. Ours uses a flat FIFO queue (lines 192-289). On complex topologies, this can cause different path selections.
+- BFS structure (lines 192-279): MATCH. Uses layered BFS (currentLayer/nextLayer) matching NCCL's nodeList/nextNodeList alternation (paths.cc:52-110).
 
-- **Critical divergence**: Intel P2P overhead. In our code (lines 237-252), the overhead is applied during SPFA path computation, reducing the stored path bandwidth for Intel CPU crossings. In NCCL, `INTEL_P2P_OVERHEAD` is applied in `followPath` (search.cc:80-91) during the search phase when consuming bandwidth. This means NCCL paths store the raw PCI bandwidth, and the overhead is only applied when deciding if a link has enough remaining bandwidth for a channel.
+- Intel P2P overhead: Not applied here. Applied during search-phase bandwidth consumption via `effectiveCost()` in search.ts, matching NCCL's followPath (search.cc:79-91).
 
 **applyPxnPaths** (paths.ts:303-414 <-> paths.cc:725-749)
 
 The overall PXN logic matches:
 1. Check PXN_DISABLE (line 310 vs ref line 592/728): MATCH
 2. Find localGpu for each NIC (lines 328-344 vs ref line 730): MATCH
-3. Condition: peer PXB to NIC (line 359 vs ref lines 736-737): **Moderate divergence** -- NCCL uses `pxnType = ncclParamPxnC2c() ? PATH_P2C : PATH_PXB`, allowing P2C paths when PXN_C2C is enabled. We always check against PXB, making our PXN more restrictive on C2C platforms.
+3. Condition: peer connected to NIC with pxnType or better (line 359 vs ref lines 735-737): MATCH. Now uses `pxnType = pxnC2c ? PATH_P2C : PATH_PXB` from NCCL_PXN_C2C env var.
 4. Condition: NVLink to GPU (line 364 vs ref lines 738-739): MATCH
 5. Condition: same node (line 366 vs ref lines 740-741): MATCH (always true for single-server)
 6. Condition: better BW or worse path type (lines 369-374 vs ref lines 742-743): MATCH (logically equivalent)
@@ -185,8 +188,8 @@ Formula: `PCI_BW * (gen/3) * (width/16)`. Matches NCCL's `PCI_WIDTH*PCI_SPEED(ge
 - POWER -> P9_BW (32.0): MATCH
 - ARM -> ARM_BW (6.0): MATCH
 - AMD -> AMD_BW (16.0): MATCH
-- Zhaoxin -> ZPI_BW (6.0): **Moderate divergence** -- NCCL checks `cpu->cpu.model == NCCL_TOPO_CPU_MODEL_YONGFENG` and returns `YONGFENG_ZPI_BW` (9.0) for that model. We always return `ZPI_BW` (6.0).
-- Intel BDW/SKL/SRP/ERP: MATCH. **Minor**: Our default fallback for unknown Intel model is `SKL_QPI_BW` (10.0), NCCL falls through to `BDW_QPI_BW` (6.0).
+- Zhaoxin -> Yongfeng=YONGFENG_ZPI_BW (9.0), else ZPI_BW (6.0): MATCH. Now checks `model === 1` for Yongfeng variant.
+- Intel BDW/SKL/SRP/ERP: MATCH. Default fallback for unknown Intel model is `BDW_QPI_BW` (6.0), matching NCCL.
 
 ### search (search.ts <-> search.cc)
 
@@ -194,10 +197,10 @@ Formula: `PCI_BW * (gen/3) * (width/16)`. Matches NCCL's `PCI_WIDTH*PCI_SPEED(ge
 
 - crossNic parameter (line 515 vs ref line 15): Default=2 (auto). MATCH.
 - Speed array selection (lines 538-539 vs ref lines 976-989, 1089-1094): MATCH. Correct arrays for default/SM90/SM100, intra/inter.
-- Starting speed index (lines 555-563 vs ref lines 1096-1101): **Moderate divergence**. NCCL uses `graph->minChannels` in the totalBw check and adjusts `totalBw *= ngpus/(ngpus-1)` for non-RING patterns. We use `nGpus` directly and never adjust totalBw.
-- Phase 1 relaxation cascade (lines 596-771 vs ref lines 1108-1190): The relaxation order matches: sameChannels -> pattern -> typeIntra -> typeInter -> crossNic -> speed decrease. **Moderate divergence**: NCCL blocks `sameChannels=0` when AMD CPU + SYS path (line 1131-1132). We always allow it.
-- Phase 2 optimization (lines 777-844 vs ref lines 1192-1230): MATCH -- tries increasing speeds after finding a valid solution.
-- **Missing**: `ncclTopoDupChannels` (search.cc:961-974) is not called between Phase 1 and Phase 2. This can double the channel count when bandwidth is high enough, significantly improving performance on Hopper+ systems.
+- Starting speed index (lines 607-615 vs ref lines 1096-1101): MATCH. Uses `minChannels` for totalBw check. Tree patterns adjust `totalBw *= ngpus/(ngpus-1)`.
+- Phase 1 relaxation cascade (lines 660-840 vs ref lines 1108-1190): MATCH. Relaxation order: sameChannels -> pattern -> typeIntra -> typeInter -> crossNic -> speed decrease. AMD sameChannels exception implemented (search.cc:1131-1132).
+- DupChannels (lines 850-900 vs search.cc:961-974): MATCH. Doubles channels when bwIntra >= 25.0, with ccMin/bwIntra/nChannels guards.
+- Phase 2 optimization (lines 900-960 vs ref lines 1192-1230): MATCH -- tries increasing speeds after finding a valid solution.
 
 **searchRingRec** (search.ts:222-319 <-> search.cc:335-500, 576-667)
 
@@ -216,12 +219,7 @@ Formula: `PCI_BW * (gen/3) * (width/16)`. Matches NCCL's `PCI_WIDTH*PCI_SPEED(ge
 
 **getBtree** (trees.ts:28-53 <-> trees.cc:31-65)
 
-**Moderate divergence**: Our implementation uses a simple textbook binary tree: `parent = floor((rank-1)/2)`, `left = 2*rank+1`, `right = 2*rank+2`. NCCL uses a specialized alternating-leaf bit-manipulation algorithm that produces a different tree shape. For example, with 8 ranks:
-
-- Ours: 0->1,2; 1->3,4; 2->5,6; 3->7
-- NCCL: 0->_,1; 2->1,3; 4->3,5; 6->5,7; 8->7,9 (with bit operations)
-
-This only matters for inter-node tree construction (multi-server), not for intra-node chains. Since our intra-node trees are chains from ring order (buildTreeGraph), the divergence only affects future cluster-mode inter-node tree wiring.
+MATCH. Now uses NCCL's alternating-leaf bit-manipulation algorithm from trees.cc:31-65. Tree shapes match exactly for all rank counts. Verified against NCCL diagram (trees.cc:11-30) for 4, 8, and 14 ranks.
 
 **ncclGetDtree** (trees.ts:62-92 <-> trees.cc:88-109)
 

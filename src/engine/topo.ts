@@ -28,6 +28,7 @@ import {
   P9_BW,
   ARM_BW,
   ZPI_BW,
+  YONGFENG_ZPI_BW,
 } from './constants/nccl'
 import { xgmiWidth, gpuTypeToGcnArch } from './constants/rccl'
 import { DecisionLog } from './decision-log'
@@ -50,15 +51,15 @@ function interSocketBw(arch: CPUArch, vendor: CPUVendor, model: number): number 
 
   // x86
   if (vendor === CPUVendor.AMD) return AMD_BW
-  if (vendor === CPUVendor.ZHAOXIN) return ZPI_BW
+  if (vendor === CPUVendor.ZHAOXIN) return model === 1 ? YONGFENG_ZPI_BW : ZPI_BW
 
-  // Intel — select by model
+  // Intel — select by model (topo.cc:81-95)
   switch (model) {
     case IntelCPUModel.BDW: return BDW_QPI_BW
     case IntelCPUModel.SKL: return SKL_QPI_BW
     case IntelCPUModel.SRP: return SRP_QPI_BW
     case IntelCPUModel.ERP: return ERP_QPI_BW
-    default: return SKL_QPI_BW // sensible fallback
+    default: return BDW_QPI_BW // NCCL default fallback (topo.cc:95)
   }
 }
 
