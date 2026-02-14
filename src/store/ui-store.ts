@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 
 export type XCCLMode = 'nccl' | 'rccl'
-export type ViewMode = 'physical' | 'ring' | 'tree' | 'paths'
+export type ViewMode = 'physical' | 'ring' | 'tree'
 export type ScaleView = 'cluster' | 'node'
 export type SidePanel = 'builder' | 'none'
 export type InfoPanel = 'info' | 'decisions' | 'ai' | 'none'
@@ -47,14 +47,7 @@ export const useUIStore = create<UIState>((set, get) => ({
   showCPUs: false,
 
   setMode: (mode) => set({ mode }),
-  setViewMode: (viewMode) => {
-    const updates: Partial<UIState> = { viewMode }
-    if (viewMode === 'paths') {
-      updates.infoPanel = 'info'
-      updates.selectedNodes = []
-    }
-    set(updates)
-  },
+  setViewMode: (viewMode) => set({ viewMode }),
   setScaleView: (scaleView) => set({ scaleView, selectedServer: scaleView === 'cluster' ? get().selectedServer : 0 }),
   setSidePanel: (panel) => set({ sidePanel: panel }),
   setInfoPanel: (panel) => set({ infoPanel: panel }),

@@ -8,7 +8,7 @@ import { NodeType } from '../../engine/types'
 export function InfoPanel() {
   const infoPanel = useUIStore((s) => s.infoPanel)
   const setInfoPanel = useUIStore((s) => s.setInfoPanel)
-  const viewMode = useUIStore((s) => s.viewMode)
+  const selectedNodes = useUIStore((s) => s.selectedNodes)
   const system = useTopologyStore((s) => s.system)
   const ringGraph = useTopologyStore((s) => s.ringGraph)
   const treeGraph = useTopologyStore((s) => s.treeGraph)
@@ -76,8 +76,8 @@ export function InfoPanel() {
               </p>
             )}
 
-            {/* Path inspector when in paths view */}
-            {viewMode === 'paths' && system && (
+            {/* Path inspector when 2 nodes are selected */}
+            {selectedNodes.length >= 2 && system && (
               <>
                 <div className="border-t border-surface-600 pt-3 mt-3" />
                 <PathInspector />
