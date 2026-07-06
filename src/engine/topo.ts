@@ -212,7 +212,16 @@ export function buildTopoSystem(
 
   if (config.nvswitch.count > 0) {
     // ---- NVSwitch topology: every GPU connects to every NVSwitch ----
-    const nvBw = nvlinkBw(compCap)
+    // NCCL aggregates the NVLink COUNT into the link bandwidth: bw = count×nvlBw
+    // (topo.cc:856). A GPU's nvlinksPerPair physical links are spread across the
+    // switches, so each GPU↔NVS link carries (links × nvlBw) / nSwitches.
+    // DGX H100: 18 × 20.6 / 4 = 92.7 per switch, 370.8 GB/s aggregate per GPU —
+    // matching real GRAPH dumps (NVIDIA/nccl#1197: GPU↔NVS 360.0 on 2.19-era
+    // nvlBw=20.0, i.e. 18 × 20.0).
+    const nvlBwPerLink = nvlinkBw(compCap)
+    const totalLinks =
+      config.gpu.nvlinksPerPair > 0 ? config.gpu.nvlinksPerPair : config.nvswitch.count
+    const nvBw = (totalLinks * nvlBwPerLink) / config.nvswitch.count
     for (let g = 0; g < config.gpu.count; g++) {
       for (let s = 0; s < config.nvswitch.count; s++) {
         // GPU -> NVSwitch
@@ -235,10 +244,11 @@ export function buildTopoSystem(
     log.emit(
       'topoGetSystem',
       'Created NVSwitch topology',
-      `${config.nvswitch.count} NVSwitch(es), NVLink BW=${nvBw} GB/s per link`,
-      'topo.cc',
+      `${config.nvswitch.count} NVSwitch(es), ${totalLinks} NVLinks/GPU × ${nvlBwPerLink} GB/s ` +
+        `= ${(totalLinks * nvlBwPerLink).toFixed(1)} GB/s aggregate (${nvBw.toFixed(1)}/switch)`,
+      'topo.cc:856 (count × nvlBw)',
       ['Direct NVLink mesh', 'xGMI mesh'],
-      { nvswitchCount: config.nvswitch.count, nvlinkBw: nvBw },
+      { nvswitchCount: config.nvswitch.count, totalLinks, perSwitchBw: nvBw },
     )
   } else if (isAmdGpu(config.gpu.type)) {
     // ---- AMD xGMI mesh: every GPU connects to every other GPU ----
@@ -390,15 +400,25 @@ export function buildTopoSystem(
   }
 
   // -------------------------------------------------------------------------
-  // 11. Compute maxBw and totalBw from all links
+  // 11. Compute maxBw / totalBw with NCCL semantics (search.cc:14-53):
+  //     totalBw = max over GPUs of that GPU's max(pciBw, Σ nvlinkBw) — the
+  //     per-GPU injection ceiling (4×MI300X: 3×48=144, ROCm/rccl#1210), NOT
+  //     the sum of every link in the system. maxBw here is the best single
+  //     link (refined to best-path by ncclTopoSearchInit once paths exist).
   // -------------------------------------------------------------------------
   let maxBw = 0
   let totalBw = 0
-  for (const link of links) {
-    if (link.bandwidth > maxBw) {
-      maxBw = link.bandwidth
+  for (const node of nodes) {
+    if (node.type !== NodeType.GPU) continue
+    let nvlinkSum = 0
+    let pciBw = 0
+    for (const link of links) {
+      if (link.fromId !== node.id) continue
+      if (link.type === LinkType.NVL) nvlinkSum += link.bandwidth
+      if (link.type === LinkType.PCI) pciBw = link.bandwidth
+      if (link.bandwidth > maxBw) maxBw = link.bandwidth
     }
-    totalBw += link.bandwidth
+    totalBw = Math.max(totalBw, Math.max(pciBw, nvlinkSum))
   }
 
   // -------------------------------------------------------------------------

@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 
 export type XCCLMode = 'nccl' | 'rccl'
-export type ViewMode = 'physical' | 'ring' | 'tree'
+export type ViewMode = 'physical' | 'ring' | 'tree' | 'nvls'
 export type ScaleView = 'cluster' | 'node'
 export type SidePanel = 'builder' | 'none'
 export type InfoPanel = 'info' | 'decisions' | 'ai' | 'none'
@@ -18,6 +18,7 @@ interface UIState {
   showGrid: boolean
   showLabels: boolean
   showCPUs: boolean
+  showRails: boolean
 
   setMode: (mode: XCCLMode) => void
   setViewMode: (viewMode: ViewMode) => void
@@ -31,6 +32,7 @@ interface UIState {
   toggleGrid: () => void
   toggleLabels: () => void
   toggleCPUs: () => void
+  toggleRails: () => void
 }
 
 export const useUIStore = create<UIState>((set, get) => ({
@@ -45,6 +47,7 @@ export const useUIStore = create<UIState>((set, get) => ({
   showGrid: false,
   showLabels: true,
   showCPUs: false,
+  showRails: true,
 
   setMode: (mode) => set({ mode }),
   setViewMode: (viewMode) => set({ viewMode }),
@@ -78,4 +81,5 @@ export const useUIStore = create<UIState>((set, get) => ({
   toggleGrid: () => set((s) => ({ showGrid: !s.showGrid })),
   toggleLabels: () => set((s) => ({ showLabels: !s.showLabels })),
   toggleCPUs: () => set((s) => ({ showCPUs: !s.showCPUs })),
+  toggleRails: () => set((s) => ({ showRails: !s.showRails })),
 }))

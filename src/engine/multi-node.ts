@@ -168,13 +168,22 @@ export function createMultiNodeTopology(
   }
 
   // -------------------------------------------------------------------------
-  // 5. Compute maxBw and totalBw
+  // 5. Compute maxBw / totalBw with NCCL semantics (search.cc:14-53):
+  //    totalBw = per-GPU injection ceiling, max over GPUs — not a system sum.
   // -------------------------------------------------------------------------
   let maxBw = 0
   let totalBw = 0
-  for (const link of allLinks) {
-    if (link.bandwidth > maxBw) maxBw = link.bandwidth
-    totalBw += link.bandwidth
+  for (const node of allNodes) {
+    if (node.type !== NodeType.GPU) continue
+    let nvlinkSum = 0
+    let pciBw = 0
+    for (const link of allLinks) {
+      if (link.fromId !== node.id) continue
+      if (link.type === LinkType.NVL) nvlinkSum += link.bandwidth
+      if (link.type === LinkType.PCI) pciBw = link.bandwidth
+      if (link.bandwidth > maxBw) maxBw = link.bandwidth
+    }
+    totalBw = Math.max(totalBw, Math.max(pciBw, nvlinkSum))
   }
 
   // -------------------------------------------------------------------------

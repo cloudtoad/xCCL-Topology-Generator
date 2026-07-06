@@ -9,6 +9,7 @@ const phaseColors: Record<DecisionPhase, string> = {
   searchInit: 'text-neon-green',
   ringSearch: 'text-neon-orange',
   treeSearch: 'text-blue-400',
+  nvlsSearch: 'text-teal-300',
   channelSetup: 'text-purple-400',
   romeModelMatch: 'text-neon-red',
 }
@@ -20,6 +21,7 @@ const phaseLabels: Record<DecisionPhase, string> = {
   searchInit: 'INIT',
   ringSearch: 'RING',
   treeSearch: 'TREE',
+  nvlsSearch: 'NVLS',
   channelSetup: 'CHAN',
   romeModelMatch: 'ROME',
 }

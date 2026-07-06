@@ -1,13 +1,25 @@
-# Fidelity Report — 2026-02-12 (updated)
+# Fidelity Report — 2026-07-06 (updated)
 
 ## Summary
-- Modules checked: 9
-- Functions compared: 18
+- Modules checked: 10
+- Functions compared: 22
 - Constants verified: 28
 - Env vars audited: 35
-- Divergences found: 0
-- Missing features: 7
+- Divergences found: 0 (in the pre-NVLS engine)
+- Missing features: 6
 - Fixed since baseline: 3 critical + 6 moderate + 3 minor divergences resolved
+- Implemented since baseline: **NVLS (NVLink SHARP)** — support gating, per-GPU-head
+  graph, runtime CTA count, and tuning selection (2026-07-06)
+- NVLS verification pass: 8 NVLS divergences found & fixed vs NCCL 2.30.7
+  (see "NVLS Verification Pass" below)
+
+> **Reference-source note (2026-07-06):** The reference source now lives locally at
+> `ref/src/nccl/` (**NCCL 2.30.7**) and `ref/src/rccl/` (both shallow, gitignored).
+> Caveat: this NCCL is *newer* than the original baseline, so exact line citations
+> across this report/manifest have drifted a few lines — the **values** still match
+> (verified for `topo.h` bandwidth constants). **NVLS has now been line-level
+> re-verified** against `transport/nvls.cc`, `graph/search.cc`, and `graph/tuning.cc`
+> (see "NVLS verification pass" below); the divergences it surfaced are fixed.
 
 ## Fixed Divergences (previously critical)
 | Module | Item | Fix | Commit |
@@ -38,10 +50,119 @@
 
 None. All decision points in the engine now match the NCCL reference source.
 
+## Implemented Features
+| NCCL Feature | Module | Notes |
+|-------------|--------|-------|
+| NVLS algorithm (NVLink SHARP) | `nvls.ts`, `tuning.ts`, `init.ts` | **New 2026-07-06, line-level verified vs NCCL 2.30.7.** Support gating (`nvlsSupport`: SM90+, NVSwitch fabric, all-GPU NVLink reachability, `NCCL_NVLS_ENABLE`), NVLS graph search (`computeNvlsGraph`: `NCCL_TOPO_PATTERN_NVLS`, one head channel per GPU capped at `NCCL_MAX_NVLS_ARITY`), a distinct runtime CTA count (16/24/32 by arch), and tuning selection of NVLS / NVLS_TREE (SIMPLE-only, `bwIntra·efficiency·(n-1)/n·CTAs` bandwidth, NVLink-Simple-hop latency). Visualized as a multicast star. Covered by 17 fidelity tests. Key validation: HGX A100 (6 NVSwitches but SM80) correctly rejects NVLS. |
+
+## NVLS Verification Pass (2026-07-06)
+
+Line-level diff of the initial NVLS implementation against the local NCCL 2.30.7
+checkout. Sources: `src/transport/nvls.cc`, `src/graph/search.cc`, `src/graph/tuning.cc`,
+`src/init.cc`. Divergences found and **fixed**:
+
+| # | Divergence (initial impl → NCCL) | NCCL ref | Severity |
+|---|----------------------------------|----------|----------|
+| 1 | Graph channel count was bandwidth-derived & capped at 16 → NCCL: `min(NCCL_MAX_NVLS_ARITY=32, nGPUs)`, single-node forced to nGPUs ("pull evenly from all GPUs") = **8 heads** | search.cc:450,1126,1135 | critical |
+| 2 | Runtime channel (CTA) count not modeled; conflated with graph count → NCCL has a **separate** count: SM90=16, SM100 single=24, SM100 multi=32 (`ncclNvlsTuning`). B200 was wrongly 16, now **24** | nvls.cc:155-213 | critical |
+| 3 | NVLS bandwidth claimed "no (N-1)/N penalty" → NCCL: `bwIntra · nvlsEfficiency · (nCh-1)/nCh · CTAs`, efficiency 0.85 Hopper / 0.74 Blackwell. H100 est. 320→**238 GB/s** (matches real ~230-250) | tuning.cc:139,312 | moderate |
+| 4 | NVLS latency modeled as "lowest, single hop ~6µs" → NCCL: `latency = intraLat` ≈ **25µs** NVLink Simple. NVLS wins on bandwidth, not latency. H100 6→**25µs** | tuning.cc:161,424 | moderate |
+| 5 | Protocol selected freely → NVLS/NVLS_TREE are **SIMPLE-only** | tuning.cc:301 | moderate |
+| 6 | `NCCL_NVLS_ENABLE` default was -2 → NCCL param default is **2** | nvls.cc:159 | minor |
+| 7 | `NCCL_NVLS_NCHANNELS` override applied to graph count → NCCL applies it to the **runtime CTA** count | nvls.cc:227 | minor |
+| 8 | No revoke-on-empty gate → NCCL clears `nvlsSupport` if the graph finds 0 channels | init.cc:1453 | minor |
+
+Not modeled (out of scope, documented): the full `ncclNvlsTreeSm100Tuning` NIC-bandwidth/ppn
+table, `llMaxBws`/`perChMaxNVLSTreeBws` caps, and the runtime multicast buffer setup — these are
+runtime/collective concerns, not topology-graph decisions.
+
+## Cluster / QP / Sim Layer (2026-07-06) — MODELED, with one corrected divergence
+
+Three modules support the tutorial layer. They are **structurally grounded in source but not
+line-ports**, and are labeled accordingly in the manifest:
+
+| Module | Status | Grounding |
+|--------|--------|-----------|
+| `cluster.ts` (multi-node channel rings) | MODELED | search.cc:837 (`backToNet=ngpus-1`), connect.cc:106-109 (cross-node stitch), search.cc:735 (NIC round-robin) |
+| `qp.ts` (queue pairs) | MODELED | transport.cc:25-26,123 (one send+recv connector per channel per node); net_ib/connect.cc:60 (`NCCL_IB_QPS_PER_CONNECTION` default 1) |
+| `sim/allgather.ts` (LL128 dataflow) | PEDAGOGICAL | device.h:110-112 LL128 layout is exact; the flag word is deliberately **overloaded** with a GPU-of-origin (real NCCL uses it as a sync counter) |
+
+**Corrected divergence (caught in review, fixed same day):** the first cluster model built 8
+standalone "rail rings" (same-index GPUs across servers) and multiplied them by the channel
+count, yielding 576 QPs for 4× DGX H100. Real NCCL builds **one ring per channel spanning all
+GPUs** — intra chain through every GPU per node, then a rail-aligned NIC exit (search.cc:837) —
+so a channel owns exactly `nNodes` inter-node edges and the true count is
+`nChannels × nNodes × qpsPerConn` = 18 × 4 × 1 = **72 QPs**. The per-rail view survives as an
+explicit lens (`railLens`) over where the hops land, clearly labeled a view, not the rings.
+
+## Golden Anchors (2026-07-06) — validation against public real-world data
+
+With no private `NCCL_DEBUG` dump available, public data was hunted. Best source:
+**NVIDIA/nccl issue #1197** — an H100-class NVSwitch system (NCCL 2.19.4) with verbatim
+GRAPH dumps. Cross-checked against 2.30.7 source. This pass found and fixed **3 more
+divergences** (`golden.test.ts` pins all of them):
+
+| # | Divergence (was → now) | Anchor | Severity |
+|---|------------------------|--------|----------|
+| 9 | GraphPattern IDs were RING=0…NVLS=6 → real NCCL: **BALANCED_TREE=1, SPLIT_TREE=2, TREE=3, RING=4, NVLS=5, COLLNET_DIRECT=6** (there is no CollNet-chain pattern — chain rides TREE). IDs appear verbatim in GRAPH logs ("Pattern 4…"), so they must match to correlate with real dumps. | graph.h:160-169; #1197 log lines | moderate |
+| 10 | NVSwitch link bw was bare `nvlBw` per GPU↔switch (82.4 GB/s aggregate on H100) → NCCL aggregates the NVLink **count**: `bw = count × nvlBw` (18 × 20.6 = **370.8**, spread 92.7/switch). #1197's topology dump shows GPU↔NVS **360.0** (2.19-era nvlBw 20.0 × 18). | topo.cc:856; #1197 topo dump | **critical** |
+| 11 | NVLS per-head speed and busBw: speed now = table entry ≤ aggregate/nHeads (370.8/8 = 46.35 → **40**, exactly #1197's "Pattern 5 … bw 40.000000"); busBw multiplier corrected to **graph heads** (not runtime CTAs) with the **×2 AllReduce pipelining factor**: 8 × 40 × 0.85 × 7/8 × 2 = **476 GB/s** ≈ real H100 NVLS AllReduce (~480). | tuning.cc:306-325; #1197; ncclTopoSearchTryNvls | **critical** |
+
+Anchor table (our engine after fixes vs. public data):
+
+| Quantity | Ours (2.30.7 constants) | #1197 dump (2.19.4) | Match |
+|----------|------------------------|---------------------|-------|
+| GPU↔NVS aggregate | 370.8 (18×20.6) | 360.0 (18×20.0) | YES (era constant) |
+| NVLS graph channels | 8 (= nGPUs) | 8 | YES |
+| NVLS bwIntra | 40 | 40 | YES |
+| Pattern IDs in logs | 1/2/3/4/5/6 | Pattern 1=Tree, 4=Ring, 5=NVLS | YES |
+| NVLS AllReduce busBw | 476 GB/s | (real-world ≈480) | YES (≈) |
+
+### Fingerprint hunt round 2 (2026-07-06) — two more divergences found & fixed
+
+Searching the web for *source-derived literal strings* (`"=== System : maxBw"`, the
+ncclTopoPrintGraph grammar) surfaced **ROCm/rccl#1210** — a real 4× MI300X printing
+`=== System : maxBw 48.0 totalBw 144.0 ===`. Cross-examining that line against
+`ncclTopoSearchInit` (search.cc:14-53) exposed:
+
+| # | Divergence (was → now) | Anchor | Severity |
+|---|------------------------|--------|----------|
+| 12 | `system.totalBw` was the **sum of every link in the system** (~3,714 for one DGX H100) → NCCL: **per-GPU injection ceiling**, max over GPUs of `max(pciBw, Σ nvlinkBw)` (H100: 370.8; 4×MI300X: 3×48 = 144 — reproduced exactly). `maxBw` similarly = best *path*, not best link. totalBw drives the starting-speed index and the optimality short-circuit `nChannels·bw ≥ totalBw`, which could **never fire** with the inflated value — forcing every search into full relaxation grind. | search.cc:14-53; ROCm/rccl#1210 | **critical** |
+| 13 | Phase-1 kept **any** valid solution, overwriting better ones found at higher speeds → NCCL keeps-if-better on `nChannels × bwIntra` (`ncclTopoCompareGraphs`, search.cc:445-461 — our own documented L4, previously un-implemented in the outer loop). | search.cc:445-461 | **critical** |
+
+**Result:** the H100 ring search now converges to `Pattern 4, crossNic 0, nChannels 12,
+bw 30.000000/…` — **the exact intra ring line from NVIDIA/nccl#1197's real machine** (their
+bwInter=30 is 2-node; ours is single-node). Tree pre-doubling = 12 @ 30, also matching.
+Aggregates saturate ≥95% of the per-GPU ceiling (H100: 360/370.8, B200: 720/721.8).
+Pinned in `golden.test.ts` "[G1] ring search reproduces the #1197 GRAPH line" and
+"[G3] maxBw/totalBw semantics".
+
+**Still open:** (a) our search consumes bandwidth per GPU-*pair* path while NCCL's
+`followPath` decrements shared underlying *links* — now empirically consistent with the
+#1197 anchor for NVSwitch systems (where pair-paths don't share PCIe links), but likely to
+matter on PCIe-only topologies; (b) NVLS `bwInter` pass-2 raise (dump shows 40/60; we set
+speedInter=speedIntra) — lands with inter-node search; (c) RCCL:
+`ref/src/rccl/tools/topo_expl/models/` ships **60 captured machine topologies** (Rome 4P2H,
+MI200 8p6l, MI300X "942" …) — ready-made golden *inputs* for the RCCL side.
+
+### Log replay (2026-07-06) — logs as witnesses, source as the constraint system
+
+`src/engine/log-replay.ts` (+ 10 tests) parses and emits NCCL's exact GRAPH line format
+(`ncclTopoPrintGraph`, search.cc:1319-1321; path-type strings topo.cc:34), so any real dump
+line can be cross-examined against the source's conditionals, and our engine's graphs can be
+diffed line-for-line against real dumps (`runInit` now emits a "GRAPH dump (NCCL log format)"
+DecisionLog entry). Cross-examining the #1197 lines yielded:
+
+| Finding | Detail |
+|---------|--------|
+| Field order pinned | `bw %f/%f` = **bwIntra first** (search.cc:1319). Trap: the disabled debug printf at search.cc:1186 prints bwInter first. |
+| New divergence flagged | #1197's NVLS line reads `bw 40/60` — **bwInter (60) > bwIntra (40)**: pass-2 raises NVLS `bwInter` independently (search.cc:1274). Our engine sets `speedInter = speedIntra`; correct modeling belongs to the not-yet-implemented inter-node search. |
+| Hardware fact recovered | Ring line: 12 ch × 30 GB/s = 360 GB/s inter per node per direction ⇒ with 400G (50 GB/s) NICs the machine must have **≥ 8 NICs** — refuting the 4-NIC reading of that issue's topology. |
+| Conditionals pinned | Ring/tree lines show `sameChannels 1, type NVL/PIX, crossNic 0` ⇒ the relaxation cascade fired **zero** steps at the final speed. The NVLS line's `sameChannels 0` is the NVLS *starting* state (`trySameChannels = pattern==NVLS ? 0 : 1`, search.cc:1105), not a relaxation. |
+
 ## Missing Features
 | NCCL Feature | Source Location | Priority | Notes |
 |-------------|----------------|----------|-------|
-| NVLS algorithm | search.cc:386-417, tuning.cc | High | NVLink SHARP (NVLS) not implemented. Required for Hopper+ multi-GPU all-reduce optimization. |
 | CollNet Direct/Chain | search.cc:350-384, connect.cc:176-239 | Medium | Collective network offload not implemented. Important for InfiniBand Sharp-capable networks. |
 | PAT algorithm | tuning.cc:201-209 | Medium | Parallel Alltoall Trees not implemented. SM60+ feature for ReduceScatter/AllGather. |
 | GDR checks | paths.cc:418-485 | Medium | GPU Direct RDMA feasibility checks not modeled. Affects NIC-GPU path selection in multi-node setups. |
@@ -101,7 +222,7 @@ None. All decision points in the engine now match the NCCL reference source.
 | NCCL_NET_DISABLE_INTRA | YES (0) | NO | - | Intra-node net disable not modeled |
 | NCCL_MIN_P2P_NCHANNELS | YES (1) | NO | - | P2P channel count not modeled |
 | NCCL_MAX_P2P_NCHANNELS | YES (64) | NO | - | P2P channel count not modeled |
-| NCCL_NVLS_NCHANNELS | N/A | NO | - | NVLS not implemented |
+| NCCL_NVLS_NCHANNELS | YES (-2) | YES | - | Overrides NVLS channel count in computeNvlsGraph |
 | NCCL_P2P_LEVEL | N/A | NO | - | P2P threshold not modeled |
 | NCCL_P2P_DISABLE | N/A | NO | - | P2P transport disable not modeled |
 | NCCL_SHM_DISABLE | N/A | NO | - | SHM transport disable not modeled |
@@ -113,7 +234,7 @@ None. All decision points in the engine now match the NCCL reference source.
 | NCCL_IB_DISABLE | N/A | NO | - | Not applicable to simulator |
 | NCCL_SOCKET_IFNAME | N/A | NO | - | Not applicable to simulator |
 | NCCL_COLLNET_ENABLE | N/A | NO | - | CollNet not implemented |
-| NCCL_NVLS_ENABLE | N/A | NO | - | NVLS not implemented |
+| NCCL_NVLS_ENABLE | YES (-2) | YES | NVLS view button | Gates NVLS in nvlsSupport (0=off, 1/-2=on if HW supports) |
 | NCCL_MNNVL_SCATTER_NETS_ENABLE | YES (1) | NO | - | MNNVL scatter not implemented |
 | NCCL_MNNVL_RAIL_PER_HOST | YES (0) | NO | - | MNNVL rail per host not implemented |
 | NCCL_P2P_PXN_LEVEL | YES (2) | NO | - | PXN level for P2P not modeled |
@@ -271,6 +392,28 @@ Our tuning is a heavily simplified heuristic compared to NCCL's detailed model i
 
 The tuning module is intentionally simplified for the simulator UI. NCCL's full tuning model spans hundreds of lines with per-collective, per-GPU-generation, per-node-count tables.
 
+**selectAlgo — NVLS branch** (tuning.ts)
+
+When a supported NVLS graph is present and the message exceeds the small-message threshold, tuning selects `NVLS` (single node) or `NVLS_TREE` (multi-node) ahead of ring/tree, forcing the **SIMPLE** protocol (tuning.cc:301). Bus bandwidth follows NCCL's formula `bwIntra · nvlsEfficiency · (nHeads-1)/nHeads · runtimeCTAs` (efficiency 0.85 Hopper / 0.74 Blackwell, tuning.cc:139,312) — there **is** an `(n-1)/n` factor; NVLS is not penalty-free. Latency is the NVLink Simple hop (~25µs, tuning.cc:424) — NVLS is a **bandwidth** win, not a latency win. The full ratio/`llMaxBws` cost model is not replicated (tuning remains an educational estimate), but the NVLS-specific constants and factors are now source-exact.
+
+### nvls (nvls.ts <-> transport/nvls.cc, graph/search.cc NVLS pattern, init.cc) — line-verified vs NCCL 2.30.7
+
+**nvlsSupport** (nvls.ts) — gates NVLS on NCCL's preconditions (`ncclNvlsInit` nvls.cc + `ncclTopoCompute` search.cc:1124):
+
+1. `NCCL_NVLS_ENABLE` (default **2**): `0` disables, `1` forces, `2` auto; requires `gpuCount >= 2` (nvls.cc:244).
+2. Compute capability `>= 90` (Hopper) — rejected **even when an NVSwitch is present** (validated: HGX A100 has 6 NVSwitches but SM80) (search.cc:1124).
+3. An NVSwitch fabric must exist and every GPU must reach a switch over `PATH_NVL` (search.cc:1124).
+4. Support is revoked if the NVLS graph search yields 0 channels (init.cc:1453).
+
+**computeNvlsGraph** (nvls.ts) — the NVLS graph is a multicast star with **one head channel per GPU**:
+
+- Pattern `NCCL_TOPO_PATTERN_NVLS` (6); `typeIntra = NVL`.
+- `nChannels = min(NCCL_MAX_NVLS_ARITY=32, nGPUs)`; single-node forces `minChannels=maxChannels` ("pull evenly from all GPUs") → exactly nGPUs heads (search.cc:450,1126,1135). **MATCH.**
+- Per-head bwIntra = highest compute-cap speed-table entry ≤ GPU→switch NVLink BW. **MATCH** (same table as ring/tree).
+- Head `c` anchors on switch `c % nSwitches`.
+
+**nvlsRuntimeChannels** (constants/nccl.ts) — the **runtime CTA count**, distinct from the graph head count: SM90=16, SM100 single-node=24, SM100 multi-node=32, overridable by `NCCL_NVLS_NCHANNELS` (`ncclNvlsTuning`, nvls.cc:155-213). **MATCH.**
+
 ### init (init.ts <-> init.cc)
 
 **runInit** (init.ts:56-388)
@@ -285,6 +428,8 @@ Pipeline order matches NCCL:
 7. Tree search + construction (lines 262-276): MATCH
 8. Setup rings (line 297): MATCH
 9. Setup channels (line 309): MATCH
+10. NVLS support check + graph (new): computes `nvlsSupport` then `computeNvlsGraph` when supported
+11. Tuning (new): representative 128 MB all-reduce algorithm/protocol selection via `selectAlgorithm`
 
 Channel bounds (lines 181-188 vs connect.cc:322-353): MATCH -- uses NCCL_MIN_NCHANNELS and NCCL_MAX_NCHANNELS with clamping.
 

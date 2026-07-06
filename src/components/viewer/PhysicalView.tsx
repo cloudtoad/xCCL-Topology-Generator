@@ -14,6 +14,7 @@ import { palette } from '../../utils/colors'
 import { useUIStore } from '../../store/ui-store'
 import type { TopoNode } from '../../engine/types'
 import { InstancedClusterView } from './InstancedClusterView'
+import { ClusterRailOverlay } from './ClusterRailOverlay'
 import type { TopoLink } from '../../engine/types'
 
 export function PhysicalView() {
@@ -28,9 +29,14 @@ export function PhysicalView() {
 
   if (!system) return null
 
-  // Multi-node cluster view → instanced renderer for performance
+  // Multi-node cluster view → instanced renderer + rail/QP overlay
   if (isMultiNode && scaleView === 'cluster') {
-    return <InstancedClusterView />
+    return (
+      <group>
+        <InstancedClusterView />
+        <ClusterRailOverlay />
+      </group>
+    )
   }
 
   // Single server or node view → detailed renderer

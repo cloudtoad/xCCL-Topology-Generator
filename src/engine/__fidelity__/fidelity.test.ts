@@ -43,6 +43,8 @@ import {
   getSpeedArrays,
   NCCL_MAX_TREE_ARITY_TOP,
   NCCL_MAX_TREE_ARITY,
+  compareGpuScores,
+  type GpuScore,
 } from '../constants/nccl'
 
 import {
@@ -59,6 +61,8 @@ import {
   LinkType,
   PathType,
   GraphPattern,
+  Algorithm,
+  Protocol,
   CPUArch,
   CPUVendor,
   PCIeGen,
@@ -72,6 +76,7 @@ import { ncclTopoCompute } from '../search'
 import { buildTreeGraph, ncclGetDtree } from '../trees'
 import { setupRings } from '../rings'
 import { setupChannels } from '../connect'
+import { nvlsSupport, computeNvlsGraph } from '../nvls'
 import { runInit } from '../init'
 import { DecisionLog } from '../decision-log'
 import { createDefaultEnvConfig } from '../env'
@@ -251,7 +256,9 @@ describe('buildTopoSystem', () => {
     const nvlLinks = system.links.filter(l => l.type === LinkType.NVL)
     // 8 GPUs * 4 NVSwitches * 2 directions = 64
     expect(nvlLinks.length).toBe(64)
-    expect(nvlLinks[0].bandwidth).toBe(SM90_NVLINK_BW)
+    // Link bw aggregates the NVLink count (topo.cc:856 count×nvlBw):
+    // 18 links × 20.6 spread over 4 switches = 92.7 per GPU↔switch link.
+    expect(nvlLinks[0].bandwidth).toBeCloseTo((18 * SM90_NVLINK_BW) / 4, 5)
   })
 
   test('MI300X: xGMI mesh links present', () => {
@@ -322,10 +329,11 @@ describe('SPFA path computation for DGX H100', () => {
     }
   })
 
-  test('GPU-GPU bandwidth = NVLink speed', () => {
+  test('GPU-GPU bandwidth = aggregated NVLink bw via one switch', () => {
     const p = getPath(system, 'gpu-0', 'gpu-1')
     expect(p).toBeDefined()
-    expect(p!.bandwidth).toBe(SM90_NVLINK_BW)
+    // Bottleneck of GPU→NVS→GPU where each hop is 18×20.6/4 (topo.cc:856).
+    expect(p!.bandwidth).toBeCloseTo((18 * SM90_NVLINK_BW) / 4, 5)
   })
 
   test('GPU-NIC same socket = PIX path type', () => {
@@ -377,7 +385,8 @@ describe('SPFA path computation for HGX A100', () => {
     const p = getPath(system, 'gpu-0', 'gpu-3')
     expect(p).toBeDefined()
     expect(p!.type).toBe(PathType.NVL)
-    expect(p!.bandwidth).toBe(SM80_NVLINK_BW)
+    // A100: 12 NVLinks × 20.0 spread over 6 switches = 40 per hop (topo.cc:856).
+    expect(p!.bandwidth).toBeCloseTo((12 * SM80_NVLINK_BW) / 6, 5)
   })
 })
 
@@ -908,5 +917,239 @@ describe('trimSystem', () => {
     trimSystem(system, env, log)
 
     expect(system.inter).toBe(false)
+  })
+})
+
+// =============================================================================
+// Layer 11: NVLS (NVLink SHARP) — nvls.cc / search.cc NVLS pattern / tuning.cc
+// =============================================================================
+
+/** Build a system with paths + trim, returning {system, env, ccMin}. */
+function prepSystem(config: typeof dgxH100Config, overrides: Record<string, number | string> = {}) {
+  const env = makeEnv(overrides)
+  const log = new DecisionLog()
+  const system = buildTopoSystem(config, env, log)
+  computeAllPaths(system, env, log)
+  trimSystem(system, env, log)
+  computeAllPaths(system, env, log)
+  let ccMin = Infinity
+  for (const g of system.nodesByType.get(NodeType.GPU) ?? []) {
+    if (g.gpu && g.gpu.cudaCompCap < ccMin) ccMin = g.gpu.cudaCompCap
+  }
+  return { system, env, log, ccMin: Number.isFinite(ccMin) ? ccMin : 0 }
+}
+
+describe('nvlsSupport (init.cc:nvlsSupport)', () => {
+  test('DGX H100 (SM90 + NVSwitch) supports NVLS', () => {
+    const { system, env, log, ccMin } = prepSystem(dgxH100Config)
+    const s = nvlsSupport(system, ccMin, env, log)
+    expect(s.supported).toBe(true)
+    expect(s.nSwitches).toBe(4)
+    expect(s.nGpus).toBe(8)
+  })
+
+  test('DGX B200 (SM100 + NVSwitch) supports NVLS', () => {
+    const { system, env, log, ccMin } = prepSystem(dgxB200Config)
+    expect(nvlsSupport(system, ccMin, env, log).supported).toBe(true)
+  })
+
+  test('HGX A100 has NVSwitches but is pre-Hopper — NVLS unsupported', () => {
+    // Key case: NVSwitch present (6 of them) but compute cap 80 < 90.
+    const { system, env, log, ccMin } = prepSystem(hgxA100Config)
+    expect(ccMin).toBe(80)
+    const s = nvlsSupport(system, ccMin, env, log)
+    expect(s.supported).toBe(false)
+    expect(s.reason).toMatch(/SM90|Hopper/)
+  })
+
+  test('MI300X (no NVSwitch / non-NVIDIA) — NVLS unsupported', () => {
+    const { system, env, log, ccMin } = prepSystem(mi300xOamConfig)
+    const s = nvlsSupport(system, ccMin, env, log)
+    expect(s.supported).toBe(false)
+  })
+
+  test('NCCL_NVLS_ENABLE=0 disables NVLS on capable hardware', () => {
+    const { system, env, log, ccMin } = prepSystem(dgxH100Config, { NCCL_NVLS_ENABLE: 0 })
+    const s = nvlsSupport(system, ccMin, env, log)
+    expect(s.supported).toBe(false)
+    expect(s.reason).toMatch(/NCCL_NVLS_ENABLE=0/)
+  })
+
+  test('support check emits an nvlsSearch decision-log entry', () => {
+    const { system, env, log, ccMin } = prepSystem(dgxH100Config)
+    nvlsSupport(system, ccMin, env, log)
+    expect(log.getEntriesByPhase('nvlsSearch').length).toBeGreaterThan(0)
+  })
+})
+
+describe('computeNvlsGraph (search.cc NCCL_TOPO_PATTERN_NVLS)', () => {
+  test('H100 NVLS graph = one head channel per GPU (search.cc:450,1126,1135)', () => {
+    const { system, log, ccMin } = prepSystem(dgxH100Config)
+    const g = computeNvlsGraph(system, ccMin, log)
+
+    expect(g.pattern).toBe(GraphPattern.NVLS)
+    expect(g.typeIntra).toBe(LinkType.NVL)
+    // Single-node NVLS forces nChannels = nGPUs (one head per GPU), capped at ARITY.
+    expect(g.nChannels).toBe(8)
+    // Per-head injection speed comes from the SM90 intra speed table.
+    expect(sm90SpeedArrayIntra).toContain(g.speedIntra)
+
+    for (const ch of g.channels) {
+      expect(ch.nvlsGpus?.length).toBe(8)          // whole multicast group
+      expect(ch.nvlsHead).toBeDefined()            // this channel's head GPU
+      expect(ch.nvlsSwitch).toBeDefined()
+      expect(system.nodes.find((n) => n.id === ch.nvlsSwitch)?.type).toBe(NodeType.NVS)
+    }
+    // Each channel's head is a distinct GPU.
+    const heads = new Set(g.channels.map((c) => c.nvlsHead))
+    expect(heads.size).toBe(8)
+  })
+
+  test('graph channel count is capped at NCCL_MAX_NVLS_ARITY, never bandwidth-derived', () => {
+    // Even though H100 has 18 NVLinks/GPU, the NVLS *graph* has exactly nGPUs heads.
+    const { system, log, ccMin } = prepSystem(dgxH100Config)
+    const g = computeNvlsGraph(system, ccMin, log)
+    expect(g.nChannels).toBe(Math.min(32, 8)) // min(NCCL_MAX_NVLS_ARITY, nGPUs)
+  })
+
+  test('heads round-robin across the NVSwitch fabric', () => {
+    const { system, log, ccMin } = prepSystem(dgxH100Config)
+    const g = computeNvlsGraph(system, ccMin, log)
+    // 4 switches → head c anchors on nvs-(c % 4).
+    expect(g.channels[0].nvlsSwitch).toBe('nvs-0')
+    expect(g.channels[1].nvlsSwitch).toBe('nvs-1')
+    expect(g.channels[4].nvlsSwitch).toBe('nvs-0')
+  })
+})
+
+describe('NVLS runtime CTA count (nvls.cc:203-213 ncclNvlsTuning)', () => {
+  test('H100 (SM90) uses 16 runtime CTAs; graph has 8 heads', () => {
+    const result = runInit(dgxH100Config, makeEnv())
+    expect(result.nvlsGraph?.nChannels).toBe(8)   // graph heads = nGPUs
+    expect(result.nvlsRuntimeChannels).toBe(16)   // NVLS_NCHANNELS_SM90
+  })
+
+  test('B200 (SM100) single-node uses 24 runtime CTAs, not 16', () => {
+    // Regression: the old bandwidth-derived model gave 16 for B200 too — wrong.
+    const result = runInit(dgxB200Config, makeEnv())
+    expect(result.nvlsGraph?.nChannels).toBe(8)   // graph heads = nGPUs
+    expect(result.nvlsRuntimeChannels).toBe(24)   // NVLS_NCHANNELS_SM100_NVL
+  })
+
+  test('NCCL_NVLS_NCHANNELS overrides the runtime CTA count', () => {
+    const result = runInit(dgxH100Config, makeEnv({ NCCL_NVLS_NCHANNELS: 12 }))
+    expect(result.nvlsRuntimeChannels).toBe(12)
+    expect(result.nvlsGraph?.nChannels).toBe(8)   // graph head count is unaffected
+  })
+})
+
+describe('NVLS end-to-end via runInit + tuning', () => {
+  test('H100 selects NVLS for a large all-reduce, beating ring bandwidth', () => {
+    const result = runInit(dgxH100Config, makeEnv())
+    expect(result.nvlsSupported).toBe(true)
+    expect(result.nvlsGraph?.pattern).toBe(GraphPattern.NVLS)
+    expect(result.tuning?.algorithm).toBe(Algorithm.NVLS)
+    // NVLS is SIMPLE-protocol only (tuning.cc:301).
+    expect(result.tuning?.protocol).toBe(Protocol.SIMPLE)
+    // Bandwidth win despite the (n-1)/n + efficiency factors.
+    expect(result.tuning!.bandwidth).toBeGreaterThan(result.ringGraph.speedIntra)
+    // Tuning reports the runtime CTA count for NVLS.
+    expect(result.tuning?.nChannels).toBe(16)
+  })
+
+  test('A100 (no NVLS) falls back to RING for a large all-reduce', () => {
+    const result = runInit(hgxA100Config, makeEnv())
+    expect(result.nvlsSupported).toBe(false)
+    expect(result.nvlsGraph).toBeNull()
+    expect(result.nvlsRuntimeChannels).toBe(0)
+    expect(result.tuning?.algorithm).toBe(Algorithm.RING)
+  })
+
+  test('NCCL_ALGO=0 forces RING even on NVLS-capable hardware', () => {
+    const result = runInit(dgxH100Config, makeEnv({ NCCL_ALGO: 0 }))
+    expect(result.nvlsSupported).toBe(true) // graph still built…
+    expect(result.tuning?.algorithm).toBe(Algorithm.RING) // …but tuning honors the override
+  })
+
+  test('NCCL_NVLS_ENABLE=0 removes NVLS from the pipeline', () => {
+    const result = runInit(dgxH100Config, makeEnv({ NCCL_NVLS_ENABLE: 0 }))
+    expect(result.nvlsSupported).toBe(false)
+    expect(result.nvlsGraph).toBeNull()
+    expect(result.tuning?.algorithm).not.toBe(Algorithm.NVLS)
+  })
+
+  test('NCCL_NVLS_ENABLE default is 2 (nvls.cc:159)', () => {
+    expect(makeEnv().get('NCCL_NVLS_ENABLE')?.default).toBe(2)
+  })
+})
+
+// =============================================================================
+// Layer 12: Order-of-operations conformance (docs/ORDER-OF-OPERATIONS.md)
+//
+// Pins the documented decision cascades to the engine so the doc can't drift.
+// =============================================================================
+
+describe('order of operations conformance', () => {
+  // L3 — the BGP-best-path-style GPU tiebreaker cascade (search.cc:202-211 cmpScore).
+  // Each level ties every higher-priority field and differs only at its own level;
+  // compareGpuScores(a, b) < 0 means `a` sorts first (is preferred).
+  const base = (): GpuScore => ({
+    g: 0, startIndex: 0, intraNhops: 2, intraBw: 50,
+    interNhops: 2, interPciBw: 50, interBw: 50,
+  })
+
+  test('L3.1 — interBw (higher wins) is the top tiebreaker', () => {
+    const a = { ...base(), interBw: 100 }
+    const b = { ...base(), interBw: 50 }
+    expect(compareGpuScores(a, b)).toBeLessThan(0)
+  })
+
+  test('L3.2 — interPciBw breaks an interBw tie (higher wins)', () => {
+    const a = { ...base(), interPciBw: 100 }
+    const b = { ...base(), interPciBw: 50 }
+    expect(compareGpuScores(a, b)).toBeLessThan(0)
+  })
+
+  test('L3.3 — interNhops breaks the tie next (lower wins)', () => {
+    const a = { ...base(), interNhops: 1 }
+    const b = { ...base(), interNhops: 3 }
+    expect(compareGpuScores(a, b)).toBeLessThan(0)
+  })
+
+  test('L3.4 — intraBw next (higher wins)', () => {
+    const a = { ...base(), intraBw: 100 }
+    const b = { ...base(), intraBw: 50 }
+    expect(compareGpuScores(a, b)).toBeLessThan(0)
+  })
+
+  test('L3.5 — intraNhops next (lower wins)', () => {
+    const a = { ...base(), intraNhops: 1 }
+    const b = { ...base(), intraNhops: 3 }
+    expect(compareGpuScores(a, b)).toBeLessThan(0)
+  })
+
+  test('L3.6 — startIndex is the final tiebreak (lower wins)', () => {
+    const a = { ...base(), startIndex: 0 }
+    const b = { ...base(), startIndex: 5 }
+    expect(compareGpuScores(a, b)).toBeLessThan(0)
+  })
+
+  test('L3 — a higher-priority field always outranks a lower one', () => {
+    // Worse on intraBw (level 4) but better on interBw (level 1) → still preferred.
+    const a = { ...base(), interBw: 100, intraBw: 1 }
+    const b = { ...base(), interBw: 50, intraBw: 999 }
+    expect(compareGpuScores(a, b)).toBeLessThan(0)
+  })
+
+  // L1/L2 — graph order: ring/tree search happens before NVLS (init.cc:1174-1215).
+  test('L1 — ring/tree search precedes NVLS in the decision trace', () => {
+    const result = runInit(dgxH100Config, makeEnv())
+    const entries = result.log.getEntries()
+    const ringSteps = entries.filter((e) => e.phase === 'ringSearch').map((e) => e.step)
+    const nvlsSteps = entries.filter((e) => e.phase === 'nvlsSearch').map((e) => e.step)
+    expect(ringSteps.length).toBeGreaterThan(0)
+    expect(nvlsSteps.length).toBeGreaterThan(0)
+    // Every NVLS decision comes after every ring/tree-search decision.
+    expect(Math.min(...nvlsSteps)).toBeGreaterThan(Math.max(...ringSteps))
   })
 })

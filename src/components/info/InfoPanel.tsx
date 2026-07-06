@@ -3,7 +3,7 @@ import { useTopologyStore } from '../../store/topology-store'
 import { DecisionLog } from './DecisionLog'
 import { AIExplainer } from './AIExplainer'
 import { PathInspector } from './PathInspector'
-import { NodeType } from '../../engine/types'
+import { NodeType, Algorithm, Protocol } from '../../engine/types'
 
 export function InfoPanel() {
   const infoPanel = useUIStore((s) => s.infoPanel)
@@ -12,6 +12,13 @@ export function InfoPanel() {
   const system = useTopologyStore((s) => s.system)
   const ringGraph = useTopologyStore((s) => s.ringGraph)
   const treeGraph = useTopologyStore((s) => s.treeGraph)
+  const nvlsGraph = useTopologyStore((s) => s.nvlsGraph)
+  const nvlsSupported = useTopologyStore((s) => s.nvlsSupported)
+  const nvlsReason = useTopologyStore((s) => s.nvlsReason)
+  const nvlsRuntimeChannels = useTopologyStore((s) => s.nvlsRuntimeChannels)
+  const tuning = useTopologyStore((s) => s.tuning)
+  const clusterTopo = useTopologyStore((s) => s.clusterTopo)
+  const qpPlan = useTopologyStore((s) => s.qpPlan)
   const generationError = useTopologyStore((s) => s.generationError)
 
   return (
@@ -56,6 +63,28 @@ export function InfoPanel() {
                 <InfoRow label="Paths" value={system.paths.size} />
                 <InfoRow label="Max BW" value={`${system.maxBw.toFixed(1)} GB/s`} />
                 <InfoRow label="Total BW" value={`${system.totalBw.toFixed(1)} GB/s`} />
+
+                {/* Rail-optimized cluster fabric (multi-node) */}
+                {clusterTopo && qpPlan && qpPlan.total > 0 && (
+                  <>
+                    <div className="border-t border-surface-600 pt-2 mt-2" />
+                    <div className="text-[10px] text-gray-600 uppercase tracking-wider">
+                      Rail-Optimized Fabric
+                    </div>
+                    <InfoRow label="Servers" value={clusterTopo.serverCount} />
+                    <InfoRow label="Rails" value={clusterTopo.railCount} />
+                    <InfoRow label="Channel rings" value={clusterTopo.nChannels} />
+                    <InfoRow
+                      label="Ring span"
+                      value={`${clusterTopo.serverCount * clusterTopo.gpuPerServer} GPUs`}
+                    />
+                    <InfoRow label="Net hops / ring" value={clusterTopo.serverCount} />
+                    <InfoRow
+                      label="QPs (total)"
+                      value={`${qpPlan.total} (${clusterTopo.nChannels}ch × ${clusterTopo.serverCount} nodes)`}
+                    />
+                  </>
+                )}
                 {ringGraph && (
                   <>
                     <div className="border-t border-surface-600 pt-2 mt-2" />
@@ -67,6 +96,47 @@ export function InfoPanel() {
                   <>
                     <InfoRow label="Tree Channels" value={treeGraph.nChannels} />
                     <InfoRow label="Tree BW/ch" value={`${treeGraph.speedIntra.toFixed(1)} GB/s`} />
+                  </>
+                )}
+
+                {/* NVLS (NVLink SHARP) */}
+                {ringGraph && (
+                  <>
+                    <div className="border-t border-surface-600 pt-2 mt-2" />
+                    <div className="flex justify-between items-center">
+                      <span className="text-gray-500">NVLS (NVLink SHARP)</span>
+                      <span
+                        className={nvlsSupported ? 'text-neon-green font-medium' : 'text-gray-500 font-medium'}
+                        title={nvlsReason}
+                      >
+                        {nvlsSupported ? 'Supported' : 'Unavailable'}
+                      </span>
+                    </div>
+                    {nvlsSupported && nvlsGraph ? (
+                      <>
+                        <InfoRow label="NVLS Heads (graph)" value={`${nvlsGraph.nChannels} (1/GPU)`} />
+                        <InfoRow label="NVLS CTAs (runtime)" value={nvlsRuntimeChannels} />
+                        <InfoRow label="NVLS BW/head" value={`${nvlsGraph.speedIntra.toFixed(1)} GB/s`} />
+                      </>
+                    ) : (
+                      nvlsReason && (
+                        <p className="text-[10px] text-gray-600 leading-snug">{nvlsReason}</p>
+                      )
+                    )}
+                  </>
+                )}
+
+                {/* Tuning: recommended algorithm for a large all-reduce */}
+                {tuning && (
+                  <>
+                    <div className="border-t border-surface-600 pt-2 mt-2" />
+                    <div className="text-[10px] text-gray-600 uppercase tracking-wider">
+                      Tuning · 128 MB all-reduce
+                    </div>
+                    <InfoRow label="Algorithm" value={Algorithm[tuning.algorithm]} />
+                    <InfoRow label="Protocol" value={Protocol[tuning.protocol]} />
+                    <InfoRow label="Est. bus BW" value={`${tuning.bandwidth.toFixed(0)} GB/s`} />
+                    <InfoRow label="Est. latency" value={`${tuning.latency.toFixed(1)} µs`} />
                   </>
                 )}
               </div>

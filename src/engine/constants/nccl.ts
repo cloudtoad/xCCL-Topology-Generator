@@ -99,14 +99,49 @@ export const NCCL_TOPO_UNDEF = -1                // topo.h:121
 export const NCCL_TOPO_XML_MAX_NODES = 256       // topo.h:217
 export const NCCL_GRAPH_XML_MAX_NODES = 4096     // topo.h:218
 
-// --- Graph patterns (search.cc) ---
-export const NCCL_TOPO_PATTERN_RING = 0
+// --- NVLS (NVLink SHARP) — nvls.cc / init.cc / tuning.cc ---
+// NVLS offloads reduction to the NVSwitch fabric. It requires SM90+ (Hopper)
+// GPUs on a 3rd-generation NVSwitch that advertises hardware multicast +
+// in-network reduction (SHARP), i.e. CU_DEVICE_ATTRIBUTE_MULTICAST_SUPPORTED.
+export const NVLS_MIN_COMPUTE_CAP = 90        // Hopper — multicast/SHARP support
+// NVLS_MAX_ARITY = NCCL_MAX_NVLS_ARITY (32) — max GPU heads in the NVLS *graph*
+// (search.cc:1126: graph->maxChannels = min(NCCL_MAX_NVLS_ARITY, nGPUs)).
+
+// Runtime NVLS channel (CTA) counts by SM arch — ncclNvlsTuning (nvls.cc:155-213).
+// This is a SEPARATE number from the graph's head count.
+export const NVLS_NCHANNELS_SM90 = 16         // Hopper (nvls.cc:155)
+export const NVLS_NCHANNELS_SM100 = 32        // Blackwell multi-node (nvls.cc:156)
+export const NVLS_NCHANNELS_SM100_NVL = 24    // Blackwell single-node (nvls.cc:157)
+
+/** Runtime NVLS CTA count by SM arch (nvls.cc:203-213). */
+export function nvlsRuntimeChannels(ccMin: number, isInter: boolean): number {
+  if (ccMin >= 100) return isInter ? NVLS_NCHANNELS_SM100 : NVLS_NCHANNELS_SM100_NVL
+  return NVLS_NCHANNELS_SM90
+}
+
+// NVLS bus-bandwidth efficiency factor by GPU generation (tuning.cc:139).
+export const NVLS_EFFICIENCY_HOPPER = 0.85
+export const NVLS_EFFICIENCY_BLACKWELL = 0.74
+
+/** NVLS efficiency factor by compute cap (tuning.cc:139 nvlsEfficiency[]). */
+export function nvlsEfficiency(ccMin: number): number {
+  if (ccMin >= 100) return NVLS_EFFICIENCY_BLACKWELL
+  if (ccMin >= 90) return NVLS_EFFICIENCY_HOPPER
+  return 0 // pre-Hopper NVLS is unsupported anyway
+}
+
+// NVLS is SIMPLE-protocol only; its hardware latency is the NVLink Simple hop
+// (~25 us), NOT a low-latency path — NVLS wins on bandwidth, not latency
+// (tuning.cc hwLatencies NVLINK/NVLS/Simple = 25; NVLS latency = intraLat).
+export const NVLS_SIMPLE_HW_LATENCY = 25.0    // us
+
+// --- Graph patterns — exact IDs from graph.h:160-169 (visible in GRAPH logs) ---
 export const NCCL_TOPO_PATTERN_BALANCED_TREE = 1
 export const NCCL_TOPO_PATTERN_SPLIT_TREE = 2
 export const NCCL_TOPO_PATTERN_TREE = 3
-export const NCCL_TOPO_PATTERN_COLLNET_DIRECT = 4
-export const NCCL_TOPO_PATTERN_COLLNET_CHAIN = 5
-export const NCCL_TOPO_PATTERN_NVLS = 6
+export const NCCL_TOPO_PATTERN_RING = 4
+export const NCCL_TOPO_PATTERN_NVLS = 5
+export const NCCL_TOPO_PATTERN_COLLNET_DIRECT = 6
 
 // --- CPU architecture constants (from NCCL source) ---
 export const NCCL_TOPO_CPU_ARCH_X86 = 1

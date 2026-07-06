@@ -37,7 +37,18 @@ export function useLayout(system: TopoSystem | null): LayoutResult {
         const prefix = `s${selectedServer ?? 0}-`
         layoutSingleServer(system, nodePositions, 0, 0, showCPUs, prefix)
       } else {
-        layoutMultiNode(system, nodePositions, nodeRotations, showCPUs)
+        // Count servers: a small cluster gets a legible grid (rows = servers,
+        // columns = GPU index / rail); larger clusters keep the radial layout.
+        const serverPrefixes = new Set<string>()
+        for (const node of system.nodes) {
+          const m = node.id.match(/^(s\d+)-/)
+          if (m) serverPrefixes.add(m[1])
+        }
+        if (serverPrefixes.size <= 8) {
+          layoutSmallCluster(system, nodePositions, showCPUs)
+        } else {
+          layoutMultiNode(system, nodePositions, nodeRotations, showCPUs)
+        }
       }
     } else {
       layoutSingleServer(system, nodePositions, 0, 0, showCPUs)
@@ -195,6 +206,55 @@ function layoutSingleServer(
       positions.set(node.id, [cpuStartX + i * cpuSpacing2, 0.01, zNVS - rowGap])
     })
   }
+}
+
+/**
+ * Small-cluster grid layout (≤ 8 servers) — optimized for legibility.
+ *
+ * Servers are stacked in depth (Z) as parallel rows; each server keeps its
+ * single-server layout, so same-index GPUs line up into columns along Z.
+ * A rail ring (GPU g on every server) therefore reads as a clean line down
+ * column g. NET switches form a front spine, each aligned over its GPU column.
+ */
+function layoutSmallCluster(
+  system: TopoSystem,
+  positions: Map<string, [number, number, number]>,
+  showCPUs: boolean,
+): void {
+  const serverPrefixes = Array.from(
+    new Set(
+      system.nodes
+        .map((n) => n.id.match(/^(s\d+)-/)?.[1])
+        .filter((p): p is string => !!p),
+    ),
+  ).sort((a, b) => parseInt(a.slice(1), 10) - parseInt(b.slice(1), 10))
+
+  const serverCount = serverPrefixes.length
+  // Each server slab spans ~6 in Z (NIC row +3 → NVS row −3), more with CPUs.
+  const serverGap = showCPUs ? 12 : 9
+  const center = (serverCount - 1) / 2
+
+  for (let s = 0; s < serverCount; s++) {
+    const prefix = `${serverPrefixes[s]}-`
+    const temp = new Map<string, [number, number, number]>()
+    layoutSingleServer(system, temp, 0, 0, showCPUs, prefix)
+    // Server 0 nearest the camera (+Z); the stack is centered on the origin.
+    const dz = (center - s) * serverGap
+    for (const [id, pos] of temp) {
+      positions.set(id, [pos[0], pos[1], pos[2] + dz])
+    }
+  }
+
+  // NET switches (rails): a spine in front of the nearest server, each aligned
+  // over the GPU column it serves so its rail ring visibly belongs to it.
+  const nets = system.nodesByType.get(NodeType.NET) ?? []
+  const frontZ = center * serverGap + serverGap
+  const netCount = nets.length
+  nets.forEach((net, i) => {
+    const colGpu = positions.get(`${serverPrefixes[0]}-gpu-${net.index}`)
+    const x = colGpu ? colGpu[0] : (i - (netCount - 1) / 2) * 1.5
+    positions.set(net.id, [x, 0.5, frontZ])
+  })
 }
 
 /**

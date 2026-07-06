@@ -20,6 +20,9 @@ export function BuilderSidebar() {
   const setSystem = useTopologyStore((s) => s.setSystem)
   const setRingGraph = useTopologyStore((s) => s.setRingGraph)
   const setTreeGraph = useTopologyStore((s) => s.setTreeGraph)
+  const setNvls = useTopologyStore((s) => s.setNvls)
+  const setTuning = useTopologyStore((s) => s.setTuning)
+  const setCluster = useTopologyStore((s) => s.setCluster)
   const setGenerating = useTopologyStore((s) => s.setGenerating)
   const setGenerationError = useTopologyStore((s) => s.setGenerationError)
   const isGenerating = useTopologyStore((s) => s.isGenerating)
@@ -45,6 +48,9 @@ export function BuilderSidebar() {
         setSystem(result.system)
         setRingGraph(result.ringGraph)
         setTreeGraph(result.treeGraph)
+        setNvls(result.nvlsGraph, result.nvlsSupported, result.nvlsReason, result.nvlsRuntimeChannels)
+        setTuning(result.tuning)
+        setCluster(result.clusterTopo, result.qpPlan)
         addEntries(result.log.getEntries())
         setGenerating(false)
       } catch (err) {
@@ -52,7 +58,7 @@ export function BuilderSidebar() {
         setGenerating(false)
       }
     }, 10)
-  }, [hardwareConfig, suConfig, envConfig, setSystem, setRingGraph, setTreeGraph, setGenerating, setGenerationError, addEntries, clearDecisions])
+  }, [hardwareConfig, suConfig, envConfig, setSystem, setRingGraph, setTreeGraph, setNvls, setTuning, setCluster, setGenerating, setGenerationError, addEntries, clearDecisions])
 
   return (
     <div className="flex flex-col h-full bg-surface-800">

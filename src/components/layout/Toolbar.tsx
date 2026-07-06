@@ -19,6 +19,9 @@ export function Toolbar() {
   const selectedServer = useUIStore((s) => s.selectedServer)
   const showCPUs = useUIStore((s) => s.showCPUs)
   const toggleCPUs = useUIStore((s) => s.toggleCPUs)
+  const showRails = useUIStore((s) => s.showRails)
+  const toggleRails = useUIStore((s) => s.toggleRails)
+  const qpPlan = useTopologyStore((s) => s.qpPlan)
 
   const system = useTopologyStore((s) => s.system)
   const setSystem = useTopologyStore((s) => s.setSystem)
@@ -109,6 +112,15 @@ export function Toolbar() {
         >
           PXN
         </button>
+        {qpPlan && qpPlan.total > 0 && (
+          <button
+            onClick={toggleRails}
+            className={`btn-secondary text-[10px] ${showRails ? 'text-neon-cyan border-neon-cyan/30' : ''}`}
+            title="Show rail-optimized inter-node rings and their QPs"
+          >
+            Rails/QPs
+          </button>
+        )}
       </div>
 
       <div className="flex-1" />

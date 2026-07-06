@@ -1,7 +1,11 @@
 # =============================================================================
 # Fidelity Manifest — maps every decision point in our engine to NCCL source
 #
-# Reference source: ~/xCCL-Book/ref/nccl/src/
+# Reference source: ref/src/nccl/ (NCCL 2.30.7, gitignored) + ref/src/rccl/ (RCCL)
+#   ref_file paths below are relative to nccl/src/ — e.g. "graph/paths.cc" is
+#   ref/src/nccl/src/graph/paths.cc; "topo.h" is now at src/graph/topo.h.
+#   NOTE: this checkout (2.30.7) is newer than the original baseline, so some
+#   line numbers have drifted — values still match, citations may be ±a few lines.
 # Our engine:       src/engine/
 # =============================================================================
 
@@ -421,6 +425,143 @@ modules:
             rule: "nRanks <= 8 with small/medium messages → TREE"
 
   # ---------------------------------------------------------------------------
+  # nvls — NVLink SHARP (in-network reduction on the NVSwitch fabric)
+  # ---------------------------------------------------------------------------
+  nvls:
+    our_file: src/engine/nvls.ts
+    ref_file: transport/nvls.cc, graph/search.cc (NCCL_TOPO_PATTERN_NVLS), graph/tuning.cc, init.cc
+    status: VERIFIED   # line-level diffed vs NCCL 2.30.7 on 2026-07-06
+    functions:
+      - name: nvlsSupport
+        ref_function: ncclNvlsInit
+        ref_file: transport/nvls.cc
+        ref_lines: "232-260"
+        description: "Gate NVLS on hardware + operator policy"
+        decisions:
+          - id: nvls-enable-env
+            ref_line: "nvls.cc:159,244"
+            rule: "NCCL_NVLS_ENABLE default 2; 0 disables, 1 forces, 2 auto. gpuCount>=2 required"
+          - id: nvls-compute-cap
+            ref_line: "search.cc:1124"
+            rule: "Requires SM90+ (compCap>=90) — hardware multicast/SHARP"
+          - id: nvls-needs-nvswitch
+            ref_line: "search.cc:1124"
+            rule: "Requires NVSwitch (system->nodes[NVS].count>0); every GPU reaches a switch over PATH_NVL"
+          - id: nvls-revoke-on-empty
+            ref_line: "init.cc:1453"
+            rule: "nvlsSupport cleared if the NVLS graph search yields 0 channels"
+      - name: computeNvlsGraph
+        ref_function: ncclTopoCompute (NCCL_TOPO_PATTERN_NVLS)
+        ref_file: search.cc
+        ref_lines: "450,1124-1137"
+        description: "Build the NVLS graph: one head channel per GPU pulling from the NVSwitch"
+        decisions:
+          - id: nvls-head-channels
+            ref_line: "search.cc:450,1126,1135"
+            rule: "nChannels = min(NCCL_MAX_NVLS_ARITY=32, nGPUs); single-node forces minChannels=maxChannels -> nGPUs heads"
+          - id: nvls-per-head-speed
+            rule: "Per-head bwIntra = highest compute-cap speed-table entry <= GPU->switch NVLink BW"
+          - id: nvls-switch-anchor
+            rule: "Head c anchors on switch (c % nSwitches) — heads spread across the fabric"
+          - id: nvls-type-intra
+            rule: "typeIntra = NVL; pattern = NCCL_TOPO_PATTERN_NVLS (6)"
+
+      - name: nvlsRuntimeChannels
+        our_file: src/engine/constants/nccl.ts
+        ref_function: ncclNvlsTuning
+        ref_file: transport/nvls.cc
+        ref_lines: "155-213"
+        description: "Runtime CTA count — SEPARATE from the graph head count"
+        decisions:
+          - id: nvls-runtime-cta
+            ref_line: "nvls.cc:203-213"
+            rule: "SM90=16, SM100 single-node=24, SM100 multi-node=32; NCCL_NVLS_NCHANNELS overrides"
+
+      - name: selectAlgo (NVLS branch)
+        our_file: src/engine/tuning.ts
+        ref_function: ncclTopoTuneModel
+        ref_file: tuning.cc
+        description: "Prefer NVLS/NVLS_TREE when supported"
+        decisions:
+          - id: nvls-tuning-select
+            rule: "messageSize > SMALL threshold + NVLS graph present -> NVLS (single node) / NVLS_TREE (multi-node)"
+          - id: nvls-simple-only
+            ref_line: "tuning.cc:301"
+            rule: "NVLS/NVLS_TREE run over SIMPLE protocol only"
+          - id: nvls-busbw
+            ref_line: "tuning.cc:139,312"
+            rule: "busBw = bwIntra * nvlsEfficiency(0.85 Hopper/0.74 Blackwell) * (nHeads-1)/nHeads * runtimeCTAs"
+          - id: nvls-latency
+            ref_line: "tuning.cc:161,424"
+            rule: "NVLS latency = intraLat (NVLink Simple ~25us); NOT low-latency. Bandwidth win, not latency win"
+
+  # ---------------------------------------------------------------------------
+  # cluster — true multi-node channel rings (rail-optimized)
+  # ---------------------------------------------------------------------------
+  cluster:
+    our_file: src/engine/cluster.ts
+    ref_file: graph/search.cc, graph/connect.cc
+    status: MODELED  # structurally faithful construction from the intra search's
+                     # cycles — NOT a port of the full 32-GPU graph search
+    functions:
+      - name: buildClusterChannels
+        description: "One ring per channel spanning all GPUs: intra chain per server, rail exit to next server"
+        decisions:
+          - id: ring-spans-all-gpus
+            ref_line: "search.cc:837"
+            rule: "Inter-node RING sets backToNet=ngpus-1 — visit every GPU in a node, then exit via NET"
+          - id: cross-node-stitch
+            ref_line: "connect.cc:106-109"
+            rule: "Ring prev/next stitched across node boundaries (exit rank of n → entry rank of n+1)"
+          - id: nic-round-robin
+            ref_line: "search.cc:735"
+            rule: "Channel c rides NIC (c % nNics): nets[(nChannels+i) % netCount]"
+          - id: entry-gpu-rail-local
+            rule: "Entry GPU = the rail NIC's local (PIX) GPU; intra cycle cut/rotated to start there, exit = cycle predecessor (crossNic=0: same NIC in and out)"
+          - id: rail-lens-is-a-view
+            rule: "The per-rail decomposition (railLens) is a visualization lens over the hops — the rings themselves span all GPUs"
+
+  # ---------------------------------------------------------------------------
+  # qp — network transport (queue pairs) under the channel rings
+  # ---------------------------------------------------------------------------
+  qp:
+    our_file: src/engine/qp.ts
+    ref_file: transport.cc, transport/net_ib/connect.cc
+    status: MODELED  # connection counting is source-grounded; QP state machine
+                     # (INIT/RTR/RTS), GID/MTU negotiation etc. not modeled
+    functions:
+      - name: buildQPs
+        description: "One connection per inter-node ring edge per channel, split into qpsPerConnection QPs"
+        decisions:
+          - id: one-net-edge-per-node-per-channel
+            ref_line: "transport.cc:25-26,123"
+            rule: "Each channel gives every node exactly 1 net send + 1 net recv connector → connections = nChannels × nNodes"
+          - id: qps-per-conn-default
+            ref_line: "net_ib/connect.cc:60"
+            rule: "NCCL_IB_QPS_PER_CONNECTION default 1 (ncclParamIbQpsPerConn)"
+          - id: qp-total
+            rule: "QPs = nChannels × nNodes × qpsPerConn; each record models the bound QP pair of one RC connection"
+
+  # ---------------------------------------------------------------------------
+  # sim — frame-level dataflow (tutorial layer)
+  # ---------------------------------------------------------------------------
+  sim_allgather:
+    our_file: src/sim/allgather.ts
+    ref_file: device.h (LL128 layout), collectives (ring allgather schedule)
+    status: PEDAGOGICAL  # honest LL128 framing, but the flag word is OVERLOADED:
+                         # real NCCL uses it as a data-ready sync counter; we embed
+                         # the GPU-of-origin to make dataflow visible
+    functions:
+      - name: simulateAllGather
+        description: "Ring AllGather schedule with origin-tagged frames + per-GPU receive logs"
+        decisions:
+          - id: ll128-line-layout
+            ref_line: "device.h:110-112"
+            rule: "128-byte line = 16×8B words: 15 data + 1 flag (NCCL_LL128_DATAELEMS=15) → nLines = ceil(bytes/120)"
+          - id: allgather-schedule
+            rule: "N-1 steps; at step s, position p forwards the chunk originated by order[(p-s) mod N]; origin passes through unaltered (copy, not reduce)"
+
+  # ---------------------------------------------------------------------------
   # init — orchestrator
   # ---------------------------------------------------------------------------
   init:
@@ -788,8 +929,8 @@ env_vars:
     ref_file: "init.cc:55"
     category: channels
     ui_knob: null
-    implemented: false
-    notes: "NVLS not yet implemented"
+    implemented: true
+    notes: "Overrides NVLS channel count in computeNvlsGraph (nvls.ts)"
 
   # --- Transport ---
   - name: NCCL_P2P_LEVEL
@@ -906,9 +1047,9 @@ env_vars:
     type: int
     ref_file: "init.cc"
     category: network
-    ui_knob: null
-    implemented: false
-    notes: "NVLS not yet implemented"
+    ui_knob: "View selector NVLS button (gated on support)"
+    implemented: true
+    notes: "Gates NVLS in nvlsSupport (nvls.ts); 0=off, 1/-2=on if hardware supports"
 
   - name: NCCL_MNNVL_SCATTER_NETS_ENABLE
     default: 1

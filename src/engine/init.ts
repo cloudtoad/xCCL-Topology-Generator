@@ -15,7 +15,7 @@
 
 import type { TopoSystem, TopoGraph, HardwareConfig, SUConfig } from './types'
 import { GraphPattern, NodeType } from './types'
-import { MAXCHANNELS } from './constants/nccl'
+import { MAXCHANNELS, nvlsRuntimeChannels } from './constants/nccl'
 import { buildTopoSystem } from './topo'
 import { createMultiNodeTopology } from './multi-node'
 import { computeAllPaths, trimSystem } from './paths'
@@ -23,6 +23,14 @@ import { ncclTopoCompute } from './search'
 import { buildTreeGraph } from './trees'
 import { setupRings } from './rings'
 import { setupChannels } from './connect'
+import { nvlsSupport, computeNvlsGraph } from './nvls'
+import { selectAlgorithm } from './tuning'
+import type { TuningResult } from './tuning'
+import { formatTopoGraph } from './log-replay'
+import { buildClusterChannels, intraOrdersFromRingGraph } from './cluster'
+import type { ClusterTopology } from './cluster'
+import { buildQPs } from './qp'
+import type { QPPlan } from './qp'
 import { matchRomeModel } from './rccl/rome-match'
 import { DecisionLog } from './decision-log'
 import type { EnvConfig } from './env'
@@ -37,6 +45,13 @@ export interface InitResult {
   system: TopoSystem
   ringGraph: TopoGraph
   treeGraph: TopoGraph
+  nvlsGraph: TopoGraph | null // NVLS multicast graph (null when unsupported)
+  nvlsSupported: boolean
+  nvlsReason: string          // why NVLS is / isn't supported
+  nvlsRuntimeChannels: number // runtime CTA count (16/24/32), 0 when unsupported
+  tuning: TuningResult | null // representative large-message algorithm choice
+  clusterTopo: ClusterTopology | null // true multi-node channel rings (multi-node only)
+  qpPlan: QPPlan | null // network queue pairs derived from inter-node ring edges
   log: DecisionLog
   romeModelMatch?: string // Model ID if matched
 }
@@ -105,11 +120,55 @@ export function runInit(
   if (isMultiNode) {
     log.emit(
       'searchInit',
-      `Multi-node fast path: skipping SPFA/search for ${suConfig.serverCount} servers`,
-      'Path computation and ring/tree search are deferred to per-server node view',
+      `Multi-node fast path: skipping full-cluster SPFA/search for ${suConfig.serverCount} servers`,
+      'Per-server ring/tree deferred to node view; cluster rails/QPs built from the rail-optimized fabric',
       'init.ts',
       [],
       { serverCount: suConfig.serverCount, totalNodes: system.nodes.length, totalLinks: system.links.length },
+    )
+
+    // Intra-node ring cycles from one representative server (all servers are
+    // identical) — the real single-server search supplies the per-channel
+    // orderings that the cluster rings are built from.
+    const oneLog = new DecisionLog()
+    const oneServer = buildTopoSystem(config, env, oneLog)
+    computeAllPaths(oneServer, env, oneLog)
+    trimSystem(oneServer, env, oneLog)
+    computeAllPaths(oneServer, env, oneLog)
+    const intraRing = ncclTopoCompute(
+      oneServer, GraphPattern.RING, 1, Math.max(1, Math.floor(MAXCHANNELS / 2)), env, oneLog,
+    )
+    let intraOrders = intraOrdersFromRingGraph(intraRing)
+    if (intraOrders.length === 0) {
+      // Search fallback: a single identity-order channel.
+      intraOrders = [Array.from({ length: config.gpu.count }, (_, g) => g)]
+    }
+
+    // True multi-node channel rings: one ring per channel spanning every GPU —
+    // intra chain per server, exiting via the channel's rail to the next server
+    // (search.cc:837, connect.cc:106-109). QPs = nChannels × nNodes × qps/conn.
+    const clusterTopo = buildClusterChannels({
+      serverCount: suConfig.serverCount,
+      gpuPerServer: config.gpu.count,
+      nicCount: config.nic.count,
+      railCount: suConfig.railCount,
+      intraOrders,
+    })
+    const qpPlan = buildQPs(clusterTopo)
+
+    log.emit(
+      'searchInit',
+      `Cluster construction: ${clusterTopo.nChannels} channel rings × ${clusterTopo.serverCount * config.gpu.count} GPUs, ${qpPlan.total} QPs`,
+      `Each channel is one ring over all GPUs (intra chain per server, rail exit); ` +
+        `QPs = ${clusterTopo.nChannels} channels × ${suConfig.serverCount} nodes × ${qpPlan.qpsPerConnection}/conn`,
+      'search.cc:837, connect.cc:106-109, net_ib/connect.cc:60',
+      [],
+      {
+        nChannels: clusterTopo.nChannels,
+        ringSpan: clusterTopo.serverCount * config.gpu.count,
+        totalQPs: qpPlan.total,
+        railCount: suConfig.railCount,
+      },
     )
 
     // Build minimal empty graphs
@@ -134,7 +193,19 @@ export function runInit(
       typeInter: 0 as any,
     }
 
-    return { system, ringGraph: emptyRing, treeGraph: emptyTree, log }
+    return {
+      system,
+      ringGraph: emptyRing,
+      treeGraph: emptyTree,
+      nvlsGraph: null,
+      nvlsSupported: false,
+      nvlsReason: 'Multi-node fast path — NVLS analysis deferred to node view',
+      nvlsRuntimeChannels: 0,
+      tuning: null,
+      clusterTopo,
+      qpPlan,
+      log,
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -309,6 +380,84 @@ export function runInit(
   const connected = setupChannels(system, ringGraph, treeGraph, log)
 
   // -------------------------------------------------------------------------
+  // Step 9: NVLS (NVLink SHARP) — Hopper+ NVSwitch in-network reduction
+  // -------------------------------------------------------------------------
+  const gpuNodes = system.nodesByType.get(NodeType.GPU) ?? []
+  let ccMin = Infinity
+  for (const g of gpuNodes) {
+    if (g.gpu && g.gpu.cudaCompCap < ccMin) ccMin = g.gpu.cudaCompCap
+  }
+  const ccMinVal = Number.isFinite(ccMin) ? ccMin : 0
+
+  log.emit(
+    'searchInit',
+    'Step 9: NVLS support check + graph',
+    'Evaluating NVLink SHARP eligibility (SM90+ GPUs on an NVSwitch fabric)',
+    'init.cc:nvlsSupport',
+  )
+
+  const nvls = nvlsSupport(system, ccMinVal, env, log)
+  let nvlsGraph: TopoGraph | null = null
+  let nvlsRuntimeCh = 0
+  if (nvls.supported) {
+    nvlsGraph = computeNvlsGraph(system, ccMinVal, log)
+    // Runtime CTA count (nvls.cc:203-213) — distinct from the graph head count.
+    nvlsRuntimeCh = nvlsRuntimeChannels(ccMinVal, system.inter)
+    const nvlsOverride = getEnvInt(env, 'NCCL_NVLS_NCHANNELS')
+    if (nvlsOverride > 0) nvlsRuntimeCh = nvlsOverride
+    // NCCL revokes NVLS support if the graph found no channels (init.cc:1453).
+    if (nvlsGraph.nChannels === 0) {
+      nvlsGraph = null
+      nvls.supported = false
+      nvls.reason = 'NVLS graph search found 0 channels'
+      nvlsRuntimeCh = 0
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Step 10: Tuning — representative large-message algorithm selection.
+  // NCCL tunes per collective size; we evaluate a representative 128 MB
+  // all-reduce (the bandwidth-bound regime where NVLS is chosen when supported).
+  // -------------------------------------------------------------------------
+  const REPRESENTATIVE_MSG_SIZE = 128 * 1024 * 1024 // 128 MB
+  log.emit(
+    'searchInit',
+    'Step 10: Algorithm/protocol tuning',
+    `Selecting algorithm for a representative ${REPRESENTATIVE_MSG_SIZE / (1024 * 1024)} MB all-reduce`,
+    'tuning.cc:ncclTopoTuneModel',
+  )
+
+  const tuning = selectAlgorithm(
+    system,
+    connected.ringGraph,
+    connected.treeGraph,
+    nvlsGraph,
+    REPRESENTATIVE_MSG_SIZE,
+    nGpus,
+    ccMinVal,
+    env,
+    log,
+  )
+
+  // -------------------------------------------------------------------------
+  // GRAPH dump in NCCL's exact log format (ncclTopoPrintGraph, search.cc:1319)
+  // — directly diffable against a real NCCL_DEBUG=INFO,GRAPH dump.
+  // -------------------------------------------------------------------------
+  const graphLines = [
+    formatTopoGraph(connected.ringGraph),
+    formatTopoGraph(connected.treeGraph),
+    ...(nvlsGraph ? [formatTopoGraph(nvlsGraph, { sameChannels: 0 })] : []),
+  ]
+  log.emit(
+    'channelSetup',
+    'GRAPH dump (NCCL log format)',
+    graphLines.join('  |  '),
+    'search.cc:1319 ncclTopoPrintGraph',
+    [],
+    { graphLines },
+  )
+
+  // -------------------------------------------------------------------------
   // Final summary
   // -------------------------------------------------------------------------
   log.emit(
@@ -324,6 +473,9 @@ export function runInit(
     {
       ringChannels: connected.ringGraph.nChannels,
       treeChannels: connected.treeGraph.nChannels,
+      nvlsChannels: nvlsGraph?.nChannels ?? 0,
+      nvlsSupported: nvls.supported,
+      tuningAlgorithm: tuning.algorithm,
       nGpus,
       romeModelMatch,
       logEntries: log.length,
@@ -334,6 +486,13 @@ export function runInit(
     system,
     ringGraph: connected.ringGraph,
     treeGraph: connected.treeGraph,
+    nvlsGraph,
+    nvlsSupported: nvls.supported,
+    nvlsReason: nvls.reason,
+    nvlsRuntimeChannels: nvlsRuntimeCh,
+    tuning,
+    clusterTopo: null,
+    qpPlan: null,
     log,
     romeModelMatch,
   }

@@ -16,6 +16,9 @@ import {
   NCCL_SIMPLE_MAX_NTHREADS,
   NCCL_LL_MAX_NTHREADS,
   NCCL_LL128_MAX_NTHREADS,
+  nvlsEfficiency,
+  nvlsRuntimeChannels,
+  NVLS_SIMPLE_HW_LATENCY,
 } from './constants/nccl'
 
 // =============================================================================
@@ -46,6 +49,10 @@ const BASE_LATENCY_SIMPLE = 5.0
 // Per-rank latency contribution
 const PER_RANK_LATENCY_RING = 2.0
 const PER_RANK_LATENCY_TREE = 1.0  // tree has log(n) depth
+
+// NVLS reduces in-network at the NVSwitch. Its intra-node latency is a fixed
+// NVLink Simple hop (~25 us, tuning.cc hwLatencies) — independent of rank count,
+// but NOT low: NVLS wins on bandwidth for large messages, not on latency.
 
 // =============================================================================
 // hasNvLink — check if the system has NVLink interconnects
@@ -142,6 +149,8 @@ function selectAlgo(
   forcedAlgo: number,
   ringGraph: TopoGraph | null,
   treeGraph: TopoGraph | null,
+  nvlsGraph: TopoGraph | null,
+  isInter: boolean,
   log: DecisionLog,
 ): Algorithm {
   // Check for forced algorithm via NCCL_ALGO env var
@@ -158,6 +167,26 @@ function selectAlgo(
       Object.values(algoNames).filter((a) => a !== algoNames[forcedAlgo]),
     )
     return forcedAlgo as Algorithm
+  }
+
+  // NVLS / NVLS_TREE: when a supported NVLS graph exists it delivers the highest
+  // all-reduce bandwidth on a Hopper+ NVSwitch fabric (the switch reduces
+  // in-network). NVLS targets medium/large messages; the tiniest messages still
+  // favor a low-latency tree, so gate on the small-message threshold.
+  // Multi-node systems use NVLS_TREE (NVLS intra-node + tree across nodes).
+  // ("NVLS/NVLStree needs at least 2 channels" — tuning.cc:309.)
+  if (nvlsGraph && nvlsGraph.nChannels >= 2 && messageSize > SMALL_MSG_THRESHOLD) {
+    const algo = isInter ? Algorithm.NVLS_TREE : Algorithm.NVLS
+    log.emit(
+      'channelSetup',
+      `Algorithm: ${Algorithm[algo]} (NVLS supported, messageSize=${messageSize})`,
+      'NVLink SHARP reduces in-network at the NVSwitch — highest all-reduce ' +
+        'bandwidth and lowest latency for medium/large messages',
+      'tuning.cc:ncclTopoTuneModel',
+      ['RING', 'TREE'],
+      { messageSize, isInter, nvlsChannels: nvlsGraph.nChannels },
+    )
+    return algo
   }
 
   // If only one graph is available, use that
@@ -250,12 +279,22 @@ function estimateBandwidth(
   nChannels: number,
   nRanks: number,
   graphBandwidth: number,
+  nvls?: { efficiency: number; runtimeChannels: number },
 ): number {
   // Bus bandwidth: for ring, effective BW = (nRanks-1)/nRanks * nChannels * linkBW
   // For tree, effective BW = nChannels * linkBW / 2 (binary tree overhead)
   let busBw: number
 
-  if (algorithm === Algorithm.RING) {
+  if ((algorithm === Algorithm.NVLS || algorithm === Algorithm.NVLS_TREE) && nvls) {
+    // NCCL (tuning.cc:306-325): per-channel NVLS bw =
+    //   bwIntra × nvlsEfficiency × (nHeads-1)/nHeads, then ×2 for AllReduce
+    //   ("AllReduce pipelines two operations" — reduce + broadcast overlap in
+    //   the switch); total busBw = nHeads(graph channels) × that.
+    // DGX H100: 8 × 40 × 0.85 × 7/8 × 2 = 476 GB/s ≈ real-world NVLS AllReduce.
+    // Note the multiplier is the GRAPH head count, not the runtime CTA count.
+    const headFactor = nChannels > 1 ? (nChannels - 1) / nChannels : 1
+    busBw = nChannels * graphBandwidth * nvls.efficiency * headFactor * 2
+  } else if (algorithm === Algorithm.RING) {
     busBw = graphBandwidth * nChannels * (nRanks > 1 ? (nRanks - 1) / nRanks : 1)
   } else {
     busBw = graphBandwidth * nChannels * 0.5
@@ -302,8 +341,19 @@ function estimateLatency(
     return baseLatency + PER_RANK_LATENCY_RING * nRanks
   }
 
-  // Tree latency scales logarithmically
   const depth = nRanks > 1 ? Math.ceil(Math.log2(nRanks)) : 0
+
+  // NVLS (tuning.cc:424): latency = the NVLink Simple hop (~25 us), independent
+  // of rank count. NVLS_TREE adds a logarithmic inter-node tree term. Note this
+  // is NOT lower than tree/ring — NVLS is a bandwidth win, not a latency win.
+  if (algorithm === Algorithm.NVLS) {
+    return NVLS_SIMPLE_HW_LATENCY
+  }
+  if (algorithm === Algorithm.NVLS_TREE) {
+    return NVLS_SIMPLE_HW_LATENCY + PER_RANK_LATENCY_TREE * depth
+  }
+
+  // Tree latency scales logarithmically
   return baseLatency + PER_RANK_LATENCY_TREE * depth
 }
 
@@ -317,8 +367,10 @@ export function selectAlgorithm(
   system: TopoSystem,
   ringGraph: TopoGraph | null,
   treeGraph: TopoGraph | null,
+  nvlsGraph: TopoGraph | null,
   messageSize: number,
   nRanks: number,
+  ccMin: number,
   env: EnvConfig,
   log: DecisionLog,
 ): TuningResult {
@@ -339,23 +391,54 @@ export function selectAlgorithm(
   // Check for NVLink
   const nvlink = hasNvLink(system)
 
-  // Select protocol
-  const protocol = selectProtocol(messageSize, nvlink, forcedProto, log)
+  // Select algorithm first — NVLS constrains the protocol.
+  const algorithm = selectAlgo(
+    messageSize, nRanks, forcedAlgo, ringGraph, treeGraph, nvlsGraph, system.inter, log,
+  )
+  const isNvls = algorithm === Algorithm.NVLS || algorithm === Algorithm.NVLS_TREE
 
-  // Select algorithm
-  const algorithm = selectAlgo(messageSize, nRanks, forcedAlgo, ringGraph, treeGraph, log)
+  // Select protocol. NVLS/NVLS_TREE are SIMPLE-only (tuning.cc:301).
+  let protocol = selectProtocol(messageSize, nvlink, forcedProto, log)
+  if (isNvls && protocol !== Protocol.SIMPLE) {
+    log.emit(
+      'channelSetup',
+      'Protocol: SIMPLE (forced — NVLS supports SIMPLE only)',
+      'NVLS/NVLS_TREE run only over the SIMPLE protocol (tuning.cc:301)',
+      'tuning.cc:301',
+      ['LL', 'LL128'],
+    )
+    protocol = Protocol.SIMPLE
+  }
 
   // Determine channel count and bandwidth from the selected graph
-  const selectedGraph = algorithm === Algorithm.TREE ? treeGraph : ringGraph
-  const nChannels = selectedGraph?.nChannels ?? 1
+  const selectedGraph = isNvls
+    ? nvlsGraph
+    : algorithm === Algorithm.TREE
+      ? treeGraph
+      : ringGraph
+  const graphChannels = selectedGraph?.nChannels ?? 1
   const graphBandwidth = selectedGraph?.speedIntra ?? 0
+
+  // NVLS runtime CTA count (nvls.cc:203-213): SM90=16, SM100 single=24 / multi=32,
+  // overridable by NCCL_NVLS_NCHANNELS. This is the channel count that actually
+  // drives the collective — distinct from the graph's per-GPU head count.
+  let nvlsCtx: { efficiency: number; runtimeChannels: number } | undefined
+  let reportedChannels = graphChannels
+  if (isNvls) {
+    let runtimeChannels = nvlsRuntimeChannels(ccMin, system.inter)
+    const nvlsOverride = getEnvInt(env, 'NCCL_NVLS_NCHANNELS')
+    if (nvlsOverride > 0) runtimeChannels = nvlsOverride
+    nvlsCtx = { efficiency: nvlsEfficiency(ccMin), runtimeChannels }
+    reportedChannels = runtimeChannels
+  }
 
   // Compute threads
   const nThreads = computeThreadCount(protocol, forcedThreads)
 
   // Estimate bandwidth and latency
-  const bandwidth = estimateBandwidth(algorithm, protocol, nChannels, nRanks, graphBandwidth)
+  const bandwidth = estimateBandwidth(algorithm, protocol, graphChannels, nRanks, graphBandwidth, nvlsCtx)
   const latency = estimateLatency(algorithm, protocol, nRanks)
+  const nChannels = reportedChannels
 
   const result: TuningResult = {
     algorithm,

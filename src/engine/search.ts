@@ -539,6 +539,61 @@ function effectiveCost(key: string, speed: number, state: SearchState): number {
 }
 
 // =============================================================================
+// ncclTopoSearchInit — search.cc:14-53
+//
+// Sets system.maxBw / system.totalBw with NCCL's exact semantics:
+//   maxBw   = max over GPUs of the best PATH bw to another GPU (intra)
+//             or to a NET node (inter) — the per-channel ceiling.
+//   totalBw = max over GPUs of that single GPU's aggregate link bandwidth,
+//             max(pciBw, Σ nvlinkBw) — the per-GPU injection ceiling.
+//
+// Real-world anchors: 4× MI300X prints "=== System : maxBw 48.0 totalBw
+// 144.0 ===" (3 xGMI × 48 — ROCm/rccl#1210); DGX H100 totalBw = 18 × 20.6
+// = 370.8. NOT the sum of every link in the system — totalBw drives the
+// starting speed index and the optimality short-circuit
+// (nChannels·bw ≥ totalBw), so inflating it prevents the search from ever
+// declaring an optimal solution.
+// =============================================================================
+
+export function ncclTopoSearchInit(system: TopoSystem): void {
+  const gpus = system.nodesByType.get(NodeType.GPU) ?? []
+
+  // Single GPU, single node: loopback only (search.cc:43-46).
+  if (!system.inter && gpus.length === 1) {
+    system.maxBw = 5000.0 // LOC_BW
+    system.totalBw = 5000.0
+    return
+  }
+
+  const nets = system.nodesByType.get(NodeType.NIC) ?? []
+  let maxBw = 0
+  let totalBw = 0
+
+  for (const gpu of gpus) {
+    // maxBw: best path to a peer GPU (intra) or to a NET/NIC (inter).
+    const targets = system.inter ? nets : gpus
+    for (const t of targets) {
+      if (t.id === gpu.id) continue
+      const p = system.paths.get(`${gpu.id}->${t.id}`)
+      if (p && p.count > 0 && p.bandwidth > maxBw) maxBw = p.bandwidth
+    }
+
+    // totalBw: this GPU's own links — max(pciBw, Σ nvlinkBw) (search.cc:30-38).
+    let nvlinkSum = 0
+    let pciBw = 0
+    for (const link of system.links) {
+      if (link.fromId !== gpu.id) continue
+      if (link.type === LinkType.NVL) nvlinkSum += link.bandwidth
+      if (link.type === LinkType.PCI) pciBw = link.bandwidth
+    }
+    totalBw = Math.max(totalBw, Math.max(pciBw, nvlinkSum))
+  }
+
+  system.maxBw = maxBw
+  system.totalBw = totalBw
+}
+
+// =============================================================================
 // Main entry point: ncclTopoCompute — search.cc:1014-1238
 // =============================================================================
 
@@ -562,6 +617,9 @@ export function ncclTopoCompute(
   const gpus = getGpuNodes(system)
   const nGpus = gpus.length
   const ccMin = getMinComputeCap(gpus)
+
+  // Set maxBw/totalBw with NCCL semantics (pipeline step 5, init.cc:1149).
+  ncclTopoSearchInit(system)
 
   // --- Determine crossNic policy (search.cc:1040-1044) ---
   let crossNic = getEnvInt(env, 'NCCL_CROSS_NIC')
@@ -711,14 +769,20 @@ export function ncclTopoCompute(
           { nChannels, speed, totalBw, sameChannels, localTypeIntra, localTypeInter },
         )
 
-        bestResult = {
-          nChannels,
-          channels: state.channels,
-          speedIntra: speed,
-          speedInter: system.inter ? speed : 0,
-          typeIntra: localTypeIntra,
-          typeInter: localTypeInter,
-          time: state.timedOut ? 0 : -1,
+        // Keep-if-better (ncclTopoCompareGraphs, search.cc:445-461): a candidate
+        // replaces the incumbent only when nChannels × bwIntra improves. Without
+        // this, descending the speed array clobbers good solutions with worse.
+        const incumbentBw = bestResult ? bestResult.speedIntra * bestResult.nChannels : 0
+        if (totalBw > incumbentBw) {
+          bestResult = {
+            nChannels,
+            channels: state.channels,
+            speedIntra: speed,
+            speedInter: system.inter ? speed : 0,
+            typeIntra: localTypeIntra,
+            typeInter: localTypeInter,
+            time: state.timedOut ? 0 : -1,
+          }
         }
 
         // Check optimality: time == -1 means the search completed without timeout

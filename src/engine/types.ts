@@ -84,11 +84,17 @@ export enum PCIeGen {
   GEN5 = 5,
 }
 
-// --- Graph pattern types (search.cc) ---
+// --- Graph pattern types — exact NCCL_TOPO_PATTERN_* values (graph.h:160-169).
+// These IDs appear verbatim in NCCL_DEBUG GRAPH logs ("Pattern 4, crossNic 0…"),
+// so they must match to correlate with real dumps. Note: there is no CollNet
+// *chain* pattern — the chain graph rides NCCL_TOPO_PATTERN_TREE (init.cc:1191).
 export enum GraphPattern {
-  RING = 0,
-  BALANCED_TREE = 1,
+  BALANCED_TREE = 1, // tree split across 2 NICs
   SPLIT_TREE = 2,
+  TREE = 3,          // all NIC traffic to/from the same GPU (also CollNet chain)
+  RING = 4,
+  NVLS = 5,          // NVLink SHARP — GPUs reduce/broadcast through the NVSwitch
+  COLLNET_DIRECT = 6,
 }
 
 // --- Algorithm types (tuning.cc) ---
@@ -212,6 +218,14 @@ export interface GraphChannel {
   treeLinks?: { parentId: string; childId: string }[]
   treeUp?: Map<string, string>
   treeDown?: Map<string, string[]>
+
+  // NVLS data — the NVLS graph has one channel per GPU "head" (search.cc:450:
+  // "NVLS channels correspond to GPUs pulling from NVLS"). Every GPU has an
+  // NVLink "up" link to nvlsSwitch; the switch reduces in-network and multicasts
+  // the result back down to nvlsGpus. (device.h nvls.up/down/out)
+  nvlsSwitch?: string   // NVSwitch node id (the multicast group's aggregation point)
+  nvlsGpus?: string[]   // GPU node ids in the multicast group
+  nvlsHead?: string     // the GPU head that this channel pulls from
 }
 
 export interface TopoGraph {
@@ -292,6 +306,7 @@ export type DecisionPhase =
   | 'searchInit'
   | 'ringSearch'
   | 'treeSearch'
+  | 'nvlsSearch'
   | 'channelSetup'
   | 'romeModelMatch'
 

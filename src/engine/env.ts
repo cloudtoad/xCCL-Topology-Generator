@@ -64,7 +64,7 @@ export function createDefaultEnvConfig(): Map<string, EnvVarDef> {
     def('NCCL_IB_DISABLE', 0, 'int', 'Disable InfiniBand', 'net.cc', 'network'),
     def('NCCL_SOCKET_IFNAME', null, 'string', 'Network interface for bootstrap', 'bootstrap.cc', 'network'),
     def('NCCL_COLLNET_ENABLE', AUTO, 'int', 'Enable CollNet collective network offload', 'init.cc:54', 'network'),
-    def('NCCL_NVLS_ENABLE', AUTO, 'int', 'Enable NVLS (NVLink SHARP)', 'init.cc', 'network'),
+    def('NCCL_NVLS_ENABLE', 2, 'int', 'Enable NVLS (NVLink SHARP): 0=off, 1=force, 2=auto', 'nvls.cc:159', 'network'),
     def('NCCL_MNNVL_SCATTER_NETS_ENABLE', 1, 'int', 'Enable MNNVL scatter nets strategy', 'search.cc:507', 'network'),
     def('NCCL_MNNVL_RAIL_PER_HOST', 0, 'int', 'MNNVL rails per host override', 'search.cc:557', 'network'),
     def('NCCL_P2P_PXN_LEVEL', 2, 'int', 'PXN usage for P2P (0=none, 1=if needed, 2=maximize aggregation)', 'search.cc:1315', 'network'),

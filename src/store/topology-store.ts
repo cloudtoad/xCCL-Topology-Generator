@@ -1,5 +1,8 @@
 import { create } from 'zustand'
 import type { TopoSystem, TopoGraph, HardwareConfig, SUConfig } from '../engine/types'
+import type { TuningResult } from '../engine/tuning'
+import type { ClusterTopology } from '../engine/cluster'
+import type { QPPlan } from '../engine/qp'
 
 interface TopologyState {
   // Hardware configuration
@@ -10,6 +13,13 @@ interface TopologyState {
   system: TopoSystem | null
   ringGraph: TopoGraph | null
   treeGraph: TopoGraph | null
+  nvlsGraph: TopoGraph | null
+  nvlsSupported: boolean
+  nvlsReason: string
+  nvlsRuntimeChannels: number
+  tuning: TuningResult | null
+  clusterTopo: ClusterTopology | null
+  qpPlan: QPPlan | null
 
   // State
   isGenerating: boolean
@@ -21,6 +31,9 @@ interface TopologyState {
   setSystem: (system: TopoSystem | null) => void
   setRingGraph: (graph: TopoGraph | null) => void
   setTreeGraph: (graph: TopoGraph | null) => void
+  setNvls: (graph: TopoGraph | null, supported: boolean, reason: string, runtimeChannels: number) => void
+  setTuning: (tuning: TuningResult | null) => void
+  setCluster: (clusterTopo: ClusterTopology | null, qpPlan: QPPlan | null) => void
   setGenerating: (generating: boolean) => void
   setGenerationError: (error: string | null) => void
   reset: () => void
@@ -38,6 +51,13 @@ export const useTopologyStore = create<TopologyState>((set) => ({
   system: null,
   ringGraph: null,
   treeGraph: null,
+  nvlsGraph: null,
+  nvlsSupported: false,
+  nvlsReason: '',
+  nvlsRuntimeChannels: 0,
+  tuning: null,
+  clusterTopo: null,
+  qpPlan: null,
   isGenerating: false,
   generationError: null,
 
@@ -46,6 +66,10 @@ export const useTopologyStore = create<TopologyState>((set) => ({
   setSystem: (system) => set({ system }),
   setRingGraph: (graph) => set({ ringGraph: graph }),
   setTreeGraph: (graph) => set({ treeGraph: graph }),
+  setNvls: (graph, supported, reason, runtimeChannels) =>
+    set({ nvlsGraph: graph, nvlsSupported: supported, nvlsReason: reason, nvlsRuntimeChannels: runtimeChannels }),
+  setTuning: (tuning) => set({ tuning }),
+  setCluster: (clusterTopo, qpPlan) => set({ clusterTopo, qpPlan }),
   setGenerating: (generating) => set({ isGenerating: generating }),
   setGenerationError: (error) => set({ generationError: error }),
   reset: () =>
@@ -53,6 +77,13 @@ export const useTopologyStore = create<TopologyState>((set) => ({
       system: null,
       ringGraph: null,
       treeGraph: null,
+      nvlsGraph: null,
+      nvlsSupported: false,
+      nvlsReason: '',
+      nvlsRuntimeChannels: 0,
+      tuning: null,
+      clusterTopo: null,
+      qpPlan: null,
       isGenerating: false,
       generationError: null,
     }),

@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import { Canvas, useThree } from '@react-three/fiber'
 import { OrbitControls } from '@react-three/drei'
 import { Grid } from './Grid'
@@ -6,34 +6,46 @@ import { RetroEffects } from './RetroEffects'
 import { PhysicalView } from './PhysicalView'
 import { RingView } from './RingView'
 import { TreeView } from './TreeView'
+import { NvlsView } from './NvlsView'
 import { useUIStore } from '../../store/ui-store'
+import { useTopologyStore } from '../../store/topology-store'
 import * as THREE from 'three'
 
-/** Resets camera target + position when switching between cluster/node view */
+/** Frames the camera for cluster/node view — and when a cluster is generated. */
 function CameraReset() {
   const scaleView = useUIStore((s) => s.scaleView)
   const selectedServer = useUIStore((s) => s.selectedServer)
+  const system = useTopologyStore((s) => s.system)
+  const isMultiNode = useMemo(
+    () => !!system?.nodes.some((n) => /^s\d+-/.test(n.id)),
+    [system],
+  )
   const { camera } = useThree()
   const controlsRef = useThree((s) => s.controls) as unknown as { target: THREE.Vector3 } | null
   const prevView = useRef(scaleView)
   const prevServer = useRef(selectedServer)
+  const prevMulti = useRef(isMultiNode)
 
   useEffect(() => {
     const viewChanged = prevView.current !== scaleView
     const serverChanged = scaleView === 'node' && prevServer.current !== selectedServer
+    const multiChanged = prevMulti.current !== isMultiNode
     prevView.current = scaleView
     prevServer.current = selectedServer
+    prevMulti.current = isMultiNode
 
-    if (!viewChanged && !serverChanged) return
+    if (!viewChanged && !serverChanged && !multiChanged) return
 
     if (scaleView === 'cluster') {
-      camera.position.set(0, 12, 25)
+      // Elevated, angled-down framing so stacked server rows read as a grid.
+      if (isMultiNode) camera.position.set(0, 22, 24)
+      else camera.position.set(0, 8, 14)
       if (controlsRef) controlsRef.target.set(0, 0, 0)
     } else {
       camera.position.set(0, 6, 12)
       if (controlsRef) controlsRef.target.set(0, 0, -1)
     }
-  }, [scaleView, selectedServer, camera, controlsRef])
+  }, [scaleView, selectedServer, isMultiNode, camera, controlsRef])
 
   return null
 }
@@ -58,6 +70,7 @@ export function Scene3D() {
       {viewMode === 'physical' && <PhysicalView />}
       {viewMode === 'ring' && <RingView />}
       {viewMode === 'tree' && <TreeView />}
+      {viewMode === 'nvls' && <NvlsView />}
 
       <OrbitControls
         makeDefault
