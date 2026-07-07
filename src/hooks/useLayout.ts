@@ -245,15 +245,20 @@ function layoutSmallCluster(
     }
   }
 
-  // NET switches (rails): a spine in front of the nearest server, each aligned
-  // over the GPU column it serves so its rail ring visibly belongs to it.
+  // NET switches (rails): each switch anchors its own RAIL LANE — a line
+  // running along Z past every server (drawn by ClusterRailOverlay through
+  // the switch's position). Switches sit to the +X side of the server stack,
+  // one lane per rail, like a cable tray beside the rack row.
   const nets = system.nodesByType.get(NodeType.NET) ?? []
-  const frontZ = center * serverGap + serverGap
-  const netCount = nets.length
+  let maxGpuX = 0
+  for (const [id, pos] of positions) {
+    if (id.includes('gpu-') && pos[0] > maxGpuX) maxGpuX = pos[0]
+  }
+  const laneStartX = maxGpuX + 2.4
+  const laneSpacing = 0.9
+  const frontZ = center * serverGap + serverGap * 0.7 // just camera-side of S0
   nets.forEach((net, i) => {
-    const colGpu = positions.get(`${serverPrefixes[0]}-gpu-${net.index}`)
-    const x = colGpu ? colGpu[0] : (i - (netCount - 1) / 2) * 1.5
-    positions.set(net.id, [x, 0.5, frontZ])
+    positions.set(net.id, [laneStartX + i * laneSpacing, 0.02, frontZ])
   })
 }
 

@@ -10,7 +10,7 @@ import { useTopologyStore } from '../../store/topology-store'
 import { useLayout } from '../../hooks/useLayout'
 import { useUIStore } from '../../store/ui-store'
 import { NodeType, LinkType } from '../../engine/types'
-import { nodeColors, linkColors } from '../../utils/colors'
+import { nodeColors, contextLinkColors, bwBrightness } from '../../utils/colors'
 import { nodeRadius } from '../../utils/geometry'
 import type { TopoNode, TopoLink } from '../../engine/types'
 
@@ -25,13 +25,15 @@ function getServerIdx(nodeId: string): number | null {
   return match ? parseInt(match[1], 10) : null
 }
 
+// Tufte context layer: physical links are muted (hue family preserved) so the
+// saturated focus overlays (rails/rings/frames) separate cleanly — no 1+1=3.
 const linkTypeColorMap: Record<number, string> = {
-  [LinkType.LOC]: linkColors.LOC,
-  [LinkType.NVL]: linkColors.NVL,
-  [LinkType.C2C]: linkColors.NVB,
-  [LinkType.PCI]: linkColors.PIX,
-  [LinkType.SYS]: linkColors.SYS,
-  [LinkType.NET]: linkColors.NET,
+  [LinkType.LOC]: contextLinkColors.LOC,
+  [LinkType.NVL]: contextLinkColors.NVL,
+  [LinkType.C2C]: contextLinkColors.NVB,
+  [LinkType.PCI]: contextLinkColors.PIX,
+  [LinkType.SYS]: contextLinkColors.SYS,
+  [LinkType.NET]: contextLinkColors.NET,
 }
 
 // ─── Per-type instanced node group ───────────────────────────────────────────
@@ -153,7 +155,13 @@ function LinkBatch({ links, positions, selectedServer }: LinkBatchProps) {
         col[offset] = DIM_LINK.r; col[offset + 1] = DIM_LINK.g; col[offset + 2] = DIM_LINK.b
         col[offset + 3] = DIM_LINK.r; col[offset + 4] = DIM_LINK.g; col[offset + 5] = DIM_LINK.b
       } else {
+        // Proportional ink via luminance: higher-bandwidth links read brighter
+        // within the muted context layer (batched lines can't vary width).
         tempColor.set(linkTypeColorMap[link.type] ?? '#444466')
+        tempColor.multiplyScalar(bwBrightness(link.bandwidth))
+        // NIC→switch cabling is represented logically by the rail lanes now —
+        // keep the physical fan as the faintest whisper.
+        if (link.type === LinkType.NET) tempColor.multiplyScalar(0.45)
         col[offset] = tempColor.r; col[offset + 1] = tempColor.g; col[offset + 2] = tempColor.b
         col[offset + 3] = tempColor.r; col[offset + 4] = tempColor.g; col[offset + 5] = tempColor.b
       }
@@ -239,8 +247,9 @@ export function InstancedClusterView() {
         selectedServer={selectedServer} color={nodeColors.NVS} size={0.25} shape="sphere" onClickInstance={handleClickNode} />
       <NodeGroup nodes={pcis} positions={layout.nodePositions} rotations={layout.nodeRotations}
         selectedServer={selectedServer} color={nodeColors.PCI} size={0.2} shape="sphere" onClickInstance={handleClickNode} />
+      {/* NET switches are lane terminals now — small caps, not big ornaments. */}
       <NodeGroup nodes={nets} positions={layout.nodePositions} rotations={layout.nodeRotations}
-        selectedServer={null} color="#00ff88" size={0.4} shape="sphere" />
+        selectedServer={null} color="#00ff88" size={0.26} shape="sphere" />
 
       <LinkBatch links={dedupedLinks} positions={layout.nodePositions} selectedServer={selectedServer} />
     </group>

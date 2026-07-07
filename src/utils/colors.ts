@@ -35,6 +35,37 @@ export const pathColors = {
   NET: '#00ff41',
 } as const
 
+// =============================================================================
+// Tufte layer system — layering & separation + proportional ink
+//
+// Physical links form the CONTEXT layer: muted, hue-family preserved so color
+// memory transfers (cyan-ish NVLink, mauve PCIe, sage NET), with brightness
+// and width proportional to bandwidth ("proportional ink" — a 92.7 GB/s
+// NVLink should not weigh the same as a 12 GB/s PCIe lane). Muted colors also
+// fall below the bloom threshold (0.2), so only the FOCUS layer (rails,
+// rings, frames — full saturation) glows. Saturated hover states give
+// Tufte's "detail on demand".
+// =============================================================================
+
+export const contextLinkColors = {
+  NVL: '#5a8a96',   // steel cyan   (was neon cyan)
+  NVB: '#4a6a8a',   // slate blue
+  PIX: '#7a5a76',   // mauve        (was neon magenta)
+  SYS: '#77704a',   // olive        (was neon yellow)
+  NET: '#567a5e',   // sage         (was neon green)
+  LOC: '#666670',   // gray
+} as const
+
+/** Proportional ink: line width (px) ∝ √bandwidth, clamped to a legible range. */
+export function linkInkWidth(bwGBs: number): number {
+  return 0.8 + 2.4 * Math.sqrt(Math.min(Math.max(bwGBs, 0), 120) / 120)
+}
+
+/** Context-layer luminance factor ∝ bandwidth (higher-bw links read brighter). */
+export function bwBrightness(bwGBs: number): number {
+  return 0.35 + 0.65 * Math.min(1, Math.max(bwGBs, 0) / 100)
+}
+
 // Channel colors — distinct colors for up to 64 channels
 const channelHues = Array.from({ length: 64 }, (_, i) => (i * 137.508) % 360)
 export const channelColors = channelHues.map(
