@@ -27,6 +27,8 @@ import { nvlsSupport, computeNvlsGraph } from './nvls'
 import { selectAlgorithm } from './tuning'
 import type { TuningResult } from './tuning'
 import { formatTopoGraph } from './log-replay'
+import { RingBuildTracer } from './ring-build-trace'
+import type { RingBuildTrace } from './ring-build-trace'
 import { buildClusterChannels, intraOrdersFromRingGraph } from './cluster'
 import type { ClusterTopology } from './cluster'
 import { buildQPs } from './qp'
@@ -50,6 +52,7 @@ export interface InitResult {
   nvlsReason: string          // why NVLS is / isn't supported
   nvlsRuntimeChannels: number // runtime CTA count (16/24/32), 0 when unsupported
   tuning: TuningResult | null // representative large-message algorithm choice
+  ringBuildTrace: RingBuildTrace | null // hop-by-hop ring construction (single-server)
   clusterTopo: ClusterTopology | null // true multi-node channel rings (multi-node only)
   qpPlan: QPPlan | null // network queue pairs derived from inter-node ring edges
   log: DecisionLog
@@ -202,6 +205,7 @@ export function runInit(
       nvlsReason: 'Multi-node fast path — NVLS analysis deferred to node view',
       nvlsRuntimeChannels: 0,
       tuning: null,
+      ringBuildTrace: null,
       clusterTopo,
       qpPlan,
       log,
@@ -276,6 +280,10 @@ export function runInit(
   let ringGraph: TopoGraph
   let romeModelMatch: string | undefined
 
+  // Trace the ring construction hop-by-hop (cheap at single-server scale) —
+  // powers the Build walkthrough view.
+  const ringTracer = new RingBuildTracer()
+
   if (rcclMode) {
     log.emit(
       'searchInit',
@@ -306,13 +314,13 @@ export function runInit(
         'rome_models.cc:2490',
       )
 
-      ringGraph = performRingSearch(system, minChannels, maxChannels, nGpus, env, log)
+      ringGraph = performRingSearch(system, minChannels, maxChannels, nGpus, env, log, ringTracer)
     }
   } else {
     // -----------------------------------------------------------------------
     // NCCL mode: standard ring search
     // -----------------------------------------------------------------------
-    ringGraph = performRingSearch(system, minChannels, maxChannels, nGpus, env, log)
+    ringGraph = performRingSearch(system, minChannels, maxChannels, nGpus, env, log, ringTracer)
   }
 
   // -------------------------------------------------------------------------
@@ -491,6 +499,7 @@ export function runInit(
     nvlsReason: nvls.reason,
     nvlsRuntimeChannels: nvlsRuntimeCh,
     tuning,
+    ringBuildTrace: ringTracer.events.length > 0 ? ringTracer.toTrace() : null,
     clusterTopo: null,
     qpPlan: null,
     log,
@@ -509,6 +518,7 @@ function performRingSearch(
   nGpus: number,
   env: EnvConfig,
   log: DecisionLog,
+  tracer?: RingBuildTracer,
 ): TopoGraph {
   const ringMaxChannels = Math.max(1, Math.floor(maxChannels / 2))
 
@@ -528,6 +538,7 @@ function performRingSearch(
     ringMaxChannels,
     env,
     log,
+    tracer,
   )
 
   log.emit(

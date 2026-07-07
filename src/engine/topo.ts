@@ -176,14 +176,19 @@ export function buildTopoSystem(
   }
 
   // -------------------------------------------------------------------------
-  // 4. Create NVSwitch nodes (if present)
+  // 4. Create the NVSwitch node (if present).
+  //
+  // NCCL models the NVSwitch fabric as ONE logical NVS node carrying the
+  // GPU's full aggregated NVLink bandwidth — real GRAPH dumps show a single
+  // "NVS/0" at count × nvlBw (NVIDIA/nccl#1197: 360.0 = 18 × 20.0). Physical
+  // switch count is kept in the label for display.
   // -------------------------------------------------------------------------
-  for (let i = 0; i < config.nvswitch.count; i++) {
+  if (config.nvswitch.count > 0) {
     nodes.push({
-      id: `nvs-${i}`,
+      id: 'nvs-0',
       type: NodeType.NVS,
-      index: i,
-      label: `NVS${i}`,
+      index: 0,
+      label: config.nvswitch.count > 1 ? `NVS ×${config.nvswitch.count}` : 'NVS0',
     })
   }
 
@@ -220,32 +225,20 @@ export function buildTopoSystem(
     // nvlBw=20.0, i.e. 18 × 20.0).
     const nvlBwPerLink = nvlinkBw(compCap)
     const totalLinks =
-      config.gpu.nvlinksPerPair > 0 ? config.gpu.nvlinksPerPair : config.nvswitch.count
-    const nvBw = (totalLinks * nvlBwPerLink) / config.nvswitch.count
+      config.gpu.nvlinksPerPair > 0 ? config.gpu.nvlinksPerPair : 1
+    const nvBw = totalLinks * nvlBwPerLink // one logical NVS link at full aggregate
     for (let g = 0; g < config.gpu.count; g++) {
-      for (let s = 0; s < config.nvswitch.count; s++) {
-        // GPU -> NVSwitch
-        links.push({
-          fromId: `gpu-${g}`,
-          toId: `nvs-${s}`,
-          type: LinkType.NVL,
-          bandwidth: nvBw,
-        })
-        // NVSwitch -> GPU
-        links.push({
-          fromId: `nvs-${s}`,
-          toId: `gpu-${g}`,
-          type: LinkType.NVL,
-          bandwidth: nvBw,
-        })
-      }
+      // GPU -> NVS (one logical switch, full aggregate)
+      links.push({ fromId: `gpu-${g}`, toId: 'nvs-0', type: LinkType.NVL, bandwidth: nvBw })
+      // NVS -> GPU
+      links.push({ fromId: 'nvs-0', toId: `gpu-${g}`, type: LinkType.NVL, bandwidth: nvBw })
     }
 
     log.emit(
       'topoGetSystem',
       'Created NVSwitch topology',
-      `${config.nvswitch.count} NVSwitch(es), ${totalLinks} NVLinks/GPU × ${nvlBwPerLink} GB/s ` +
-        `= ${(totalLinks * nvlBwPerLink).toFixed(1)} GB/s aggregate (${nvBw.toFixed(1)}/switch)`,
+      `${config.nvswitch.count} physical NVSwitch(es) as one logical NVS node; ` +
+        `${totalLinks} NVLinks/GPU × ${nvlBwPerLink} GB/s = ${nvBw.toFixed(1)} GB/s aggregate`,
       'topo.cc:856 (count × nvlBw)',
       ['Direct NVLink mesh', 'xGMI mesh'],
       { nvswitchCount: config.nvswitch.count, totalLinks, perSwitchBw: nvBw },

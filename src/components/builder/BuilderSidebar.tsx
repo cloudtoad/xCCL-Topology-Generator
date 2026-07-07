@@ -23,6 +23,7 @@ export function BuilderSidebar() {
   const setNvls = useTopologyStore((s) => s.setNvls)
   const setTuning = useTopologyStore((s) => s.setTuning)
   const setCluster = useTopologyStore((s) => s.setCluster)
+  const setRingBuildTrace = useTopologyStore((s) => s.setRingBuildTrace)
   const setGenerating = useTopologyStore((s) => s.setGenerating)
   const setGenerationError = useTopologyStore((s) => s.setGenerationError)
   const isGenerating = useTopologyStore((s) => s.isGenerating)
@@ -51,6 +52,7 @@ export function BuilderSidebar() {
         setNvls(result.nvlsGraph, result.nvlsSupported, result.nvlsReason, result.nvlsRuntimeChannels)
         setTuning(result.tuning)
         setCluster(result.clusterTopo, result.qpPlan)
+        setRingBuildTrace(result.ringBuildTrace)
         addEntries(result.log.getEntries())
         setGenerating(false)
       } catch (err) {
@@ -58,7 +60,7 @@ export function BuilderSidebar() {
         setGenerating(false)
       }
     }, 10)
-  }, [hardwareConfig, suConfig, envConfig, setSystem, setRingGraph, setTreeGraph, setNvls, setTuning, setCluster, setGenerating, setGenerationError, addEntries, clearDecisions])
+  }, [hardwareConfig, suConfig, envConfig, setSystem, setRingGraph, setTreeGraph, setNvls, setTuning, setCluster, setRingBuildTrace, setGenerating, setGenerationError, addEntries, clearDecisions])
 
   return (
     <div className="flex flex-col h-full bg-surface-800">

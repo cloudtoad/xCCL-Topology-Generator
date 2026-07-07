@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import type { TopoSystem, TopoGraph, HardwareConfig, SUConfig } from '../engine/types'
 import type { TuningResult } from '../engine/tuning'
 import type { ClusterTopology } from '../engine/cluster'
+import type { RingBuildTrace } from '../engine/ring-build-trace'
 import type { QPPlan } from '../engine/qp'
 
 interface TopologyState {
@@ -18,6 +19,7 @@ interface TopologyState {
   nvlsReason: string
   nvlsRuntimeChannels: number
   tuning: TuningResult | null
+  ringBuildTrace: RingBuildTrace | null
   clusterTopo: ClusterTopology | null
   qpPlan: QPPlan | null
 
@@ -33,6 +35,7 @@ interface TopologyState {
   setTreeGraph: (graph: TopoGraph | null) => void
   setNvls: (graph: TopoGraph | null, supported: boolean, reason: string, runtimeChannels: number) => void
   setTuning: (tuning: TuningResult | null) => void
+  setRingBuildTrace: (trace: RingBuildTrace | null) => void
   setCluster: (clusterTopo: ClusterTopology | null, qpPlan: QPPlan | null) => void
   setGenerating: (generating: boolean) => void
   setGenerationError: (error: string | null) => void
@@ -56,6 +59,7 @@ export const useTopologyStore = create<TopologyState>((set) => ({
   nvlsReason: '',
   nvlsRuntimeChannels: 0,
   tuning: null,
+  ringBuildTrace: null,
   clusterTopo: null,
   qpPlan: null,
   isGenerating: false,
@@ -69,6 +73,7 @@ export const useTopologyStore = create<TopologyState>((set) => ({
   setNvls: (graph, supported, reason, runtimeChannels) =>
     set({ nvlsGraph: graph, nvlsSupported: supported, nvlsReason: reason, nvlsRuntimeChannels: runtimeChannels }),
   setTuning: (tuning) => set({ tuning }),
+  setRingBuildTrace: (ringBuildTrace) => set({ ringBuildTrace }),
   setCluster: (clusterTopo, qpPlan) => set({ clusterTopo, qpPlan }),
   setGenerating: (generating) => set({ isGenerating: generating }),
   setGenerationError: (error) => set({ generationError: error }),
@@ -82,6 +87,7 @@ export const useTopologyStore = create<TopologyState>((set) => ({
       nvlsReason: '',
       nvlsRuntimeChannels: 0,
       tuning: null,
+      ringBuildTrace: null,
       clusterTopo: null,
       qpPlan: null,
       isGenerating: false,

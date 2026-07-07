@@ -137,11 +137,48 @@ Aggregates saturate ≥95% of the per-GPU ceiling (H100: 360/370.8, B200: 720/72
 Pinned in `golden.test.ts` "[G1] ring search reproduces the #1197 GRAPH line" and
 "[G3] maxBw/totalBw semantics".
 
-**Still open:** (a) our search consumes bandwidth per GPU-*pair* path while NCCL's
-`followPath` decrements shared underlying *links* — now empirically consistent with the
-#1197 anchor for NVSwitch systems (where pair-paths don't share PCIe links), but likely to
-matter on PCIe-only topologies; (b) NVLS `bwInter` pass-2 raise (dump shows 40/60; we set
-speedInter=speedIntra) — lands with inter-node search; (c) RCCL:
+### Walkthrough instrumentation pass (2026-07-07) — two more fixed, one closed
+
+Instrumenting the search for the Build walkthrough forced a close read of bandwidth
+consumption and found:
+
+| # | Divergence (was → now) | Anchor | Severity |
+|---|------------------------|--------|----------|
+| 14 | Fresh ring searches consumed bandwidth **twice** (during recursion AND via consumeRingBandwidth after) → recursion consumption is kept on success, only the closure edge is charged after (followPath keeps its consumption) | search.cc:79-91 | **critical** (was masking #15) |
+| 15 | Bandwidth budgets were per GPU-*pair* path → NCCL's followPath consumes on the **shared physical links** along the path; and the NVSwitch fabric is modeled as **one logical NVS node** at the full count×nvlBw aggregate — exactly how #1197's dump presents it (single NVS/0 @ 360) | search.cc:79-91; topo.cc:856; #1197 topo dump | **critical** |
+
+The two bugs had been *cancelling* into the right answer: removing #14 alone overshot
+(12ch@40 = 480 > 370.8 ceiling), fixing per-pair alone undershot (paths funneled into one
+of 4 switches). With both corrected — shared-link consumption over a single aggregated
+NVS — the H100 search lands on `Pattern 4 … nChannels 12, bw 30.000000` **again, now via
+the true mechanism** (6 rings @ 60 → DupChannels → 12 @ 30, 97% saturation; B200 16@45,
+99.75%). The ring build trace (`ring-build-trace.ts`) replays the accepted search
+deterministically and is test-pinned to reproduce the final channel orders exactly.
+
+### The 2-node experiment (2026-07-07) — RecNet implemented and validated
+
+`network.ts` (rail-paired NET nodes, NICx↔NICx) + `searchForChannelsInter` in search.ts
+implement the inter-node ring search strictly per RecNet (search.cc:726-812): NIC rotation
+`nets[(ch+i)%netCount]`, NET budget skip (:745), sameChannels replay-first (:776-780),
+local-GPU entry (:791-803), typed exit, crossNic fallback, mid-ring far-from-net candidate
+reversal. Run on a 2-node DGX H100 model, the strict order of operations produced —
+unprompted — every behavior predicted from reading the source:
+
+| Prediction (from the RecNet discussion) | Outcome |
+|------------------------------------------|---------|
+| All NICs fill (no bandwidth on the table) | 8 channels, one per rail — PCIe (20 GB/s model) feeds exactly one 20 GB/s channel per NIC |
+| Channels enter at their rail's local GPU | ch0@net-0 enters GPU0, ch1@net-1 enters GPU1, … |
+| Replay through rotated NICs fails → sameChannels sacrificed | confirmed in trace: sameChannels→0 fired; accepted solution has 8 **different** ring orders |
+| Rings weird for structural reasons | e.g. `net-0 → [0 7 6 5 4 3 1 2] → net-0`: entry = rail GPU, middle = far-from-net GPUs (sortNet=-1 reversal), exit = the *other* PIX-local GPU saved for last |
+
+Pinned in `inter-search.test.ts` (5 tests). Honest deltas vs #1197's 2-node line
+(`12ch, bw 30/30, sameChannels 1`): their VM-flattened topology permits higher GPU↔NET bw
+(30 > our PCIe-20 model ceiling) and replay through rotated NICs (flat paths type-equal) —
+ours models the strict DGX-style per-rail locality. Also closes open item (a) partially:
+speedInter now meaningful (= accepted channel speed); the NVLS pass-2 bwInter raise remains.
+
+**Still open:** (a) NVLS `bwInter` pass-2 raise (dump shows 40/60; we set
+speedInter=speedIntra) — lands with inter-node search pass-2 refinement; (b) RCCL:
 `ref/src/rccl/tools/topo_expl/models/` ships **60 captured machine topologies** (Rome 4P2H,
 MI200 8p6l, MI300X "942" …) — ready-made golden *inputs* for the RCCL side.
 

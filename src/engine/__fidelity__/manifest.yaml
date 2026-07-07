@@ -561,6 +561,24 @@ modules:
           - id: allgather-schedule
             rule: "N-1 steps; at step s, position p forwards the chunk originated by order[(p-s) mod N]; origin passes through unaltered (copy, not reduce)"
 
+  sim_allreduce:
+    our_file: src/sim/allreduce.ts
+    ref_file: collectives (ring allreduce schedule), device.h (LL128 layout)
+    status: PEDAGOGICAL  # real int16 values at toy scale; chunk/buffer sizes and
+                         # channel count chosen for legibility (scaling model:
+                         # buffer = chunkElems × nRanks × channels, so the 4-GPU
+                         # toy is 16 elements and the 64-GPU cluster is 256)
+    functions:
+      - name: simulateAllReduce
+        description: "Two-phase ring AllReduce with visible arithmetic + origin-bitmask flag"
+        decisions:
+          - id: ring-allreduce-schedule
+            rule: "RS step s: position p sends chunk (p-s) mod N, receiver ADDs; AG step s: p sends chunk (p+1-s) mod N, receiver copies. 2(N-1) steps total"
+          - id: flag-origin-bitmask
+            rule: "LL128 8-byte flag overloaded as a 64-bit origin bitmask (bigint): OR-accumulates during reduce-scatter, passes through during all-gather. Full at exactly 64 GPUs (8×8 target scale)"
+          - id: int16-overflow-guard
+            rule: "Seeds validated so no partial or final sum exceeds int16 — the teaching sim must not silently wrap"
+
   # ---------------------------------------------------------------------------
   # init — orchestrator
   # ---------------------------------------------------------------------------

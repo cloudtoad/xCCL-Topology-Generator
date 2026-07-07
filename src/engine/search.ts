@@ -36,6 +36,7 @@ import {
 import { DecisionLog } from './decision-log'
 import type { EnvConfig } from './env'
 import { getEnvInt } from './env'
+import { RingBuildTracer } from './ring-build-trace'
 
 // =============================================================================
 // Internal types
@@ -43,8 +44,17 @@ import { getEnvInt } from './env'
 
 /** Intermediate search state tracking bandwidth consumed on each link */
 interface SearchState {
-  /** Remaining bandwidth on each path (key = "fromId->toId") */
+  /**
+   * Remaining bandwidth per PHYSICAL LINK (key = "fromId>toId"). NCCL's
+   * followPath (search.cc:79-91) consumes bandwidth on the links a path
+   * traverses — links shared by many GPU pairs deplete for all of them.
+   * (A per-pair budget would let rings oversubscribe shared switch links.)
+   */
   remainingBw: Map<string, number>
+  /** Path key ("a->b") → the physical link keys that path traverses. */
+  pathLinks: Map<string, string[]>
+  /** NET node budgets — RecNet's net->bw (search.cc:745: skip if bw < speed). */
+  netBw: Map<string, number>
   /** Channels found so far */
   channels: GraphChannel[]
   /** Iteration counter for timeout */
@@ -94,6 +104,48 @@ function pathKey(fromId: string, toId: string): string {
   return `${fromId}->${toId}`
 }
 
+/** Directed physical-link key. */
+function linkKey(fromId: string, toId: string): string {
+  return `${fromId}>${toId}`
+}
+
+/** Map every computed path to the physical links it traverses (via hops). */
+function buildPathLinks(system: TopoSystem): Map<string, string[]> {
+  const map = new Map<string, string[]>()
+  system.paths.forEach((path, key) => {
+    const links: string[] = []
+    let prev = path.fromId
+    for (const hop of path.hops) {
+      links.push(linkKey(prev, hop.nodeId))
+      prev = hop.nodeId
+    }
+    map.set(key, links)
+  })
+  return map
+}
+
+/** Bottleneck remaining bandwidth across a path's links (followPath check). */
+function pathRemaining(state: SearchState, key: string): number {
+  const links = state.pathLinks.get(key)
+  if (!links || links.length === 0) return 0
+  let min = Infinity
+  for (const l of links) {
+    const r = state.remainingBw.get(l)
+    if (r !== undefined && r < min) min = r
+  }
+  return min === Infinity ? 0 : min
+}
+
+/** Consume (or restore, with negative cost) bandwidth on a path's links. */
+function consumePathBw(state: SearchState, key: string, cost: number): void {
+  const links = state.pathLinks.get(key)
+  if (!links) return
+  for (const l of links) {
+    const r = state.remainingBw.get(l)
+    if (r !== undefined) state.remainingBw.set(l, r - cost)
+  }
+}
+
 /** Get the path between two nodes, if it exists */
 function getPath(system: TopoSystem, fromId: string, toId: string): TopoPath | undefined {
   return system.paths.get(pathKey(fromId, toId))
@@ -129,7 +181,10 @@ function getInterPathTypeRange(
   system: TopoSystem,
   gpus: TopoNode[],
 ): { minType: number; maxType: number } {
-  const nics = system.nodesByType.get(NodeType.NIC) ?? []
+  // Inter range is measured GPU→NET when NET nodes exist (the RecNet entry/
+  // exit paths); fall back to GPU→NIC for NET-less systems.
+  const netNodes = system.nodesByType.get(NodeType.NET) ?? []
+  const nics = netNodes.length > 0 ? netNodes : (system.nodesByType.get(NodeType.NIC) ?? [])
   if (nics.length === 0) {
     return { minType: PathType.SYS, maxType: PathType.NET }
   }
@@ -234,6 +289,8 @@ function searchRingRec(
   requiredBw: number,
   state: SearchState,
   timeout: number,
+  tracer?: RingBuildTracer,
+  traceChannel?: number,
 ): string[] | null {
   state.iterations++
   state.globalIterations++
@@ -249,7 +306,7 @@ function searchRingRec(
     if (!closePath) return null
 
     const closeKey = pathKey(current.id, first.id)
-    const closeRemaining = state.remainingBw.get(closeKey) ?? closePath.bandwidth
+    const closeRemaining = pathRemaining(state, closeKey)
     const closeCost = effectiveCost(closeKey, requiredBw, state)
     if (closeRemaining < closeCost) return null
 
@@ -268,7 +325,7 @@ function searchRingRec(
 
     // Check bandwidth availability (with Intel P2P overhead if applicable)
     const key = pathKey(current.id, gpu.id)
-    const remaining = state.remainingBw.get(key) ?? p.bandwidth
+    const remaining = pathRemaining(state, key)
     const cost = effectiveCost(key, requiredBw, state)
     if (remaining < cost) continue
 
@@ -277,7 +334,7 @@ function searchRingRec(
       const closePath = getPath(system, gpu.id, first.id)
       if (!closePath) continue
       const closeKey = pathKey(gpu.id, first.id)
-      const closeRemaining = state.remainingBw.get(closeKey) ?? closePath.bandwidth
+      const closeRemaining = pathRemaining(state, closeKey)
       const lastCloseCost = effectiveCost(closeKey, requiredBw, state)
       if (closeRemaining < lastCloseCost) continue
     }
@@ -288,16 +345,42 @@ function searchRingRec(
   // Sort by score (best first) — search.cc:191-201
   candidates.sort(compareGpuScores)
 
+  // Record the scored candidate list (the L3 tiebreaker cascade, visible).
+  if (tracer && candidates.length > 0 && traceChannel !== undefined) {
+    tracer.pushDetail({
+      kind: 'consider',
+      channel: traceChannel,
+      from: current.id,
+      candidates: candidates.slice(0, 4).map((s, rank) => ({
+        id: gpus[s.g].id,
+        intraBw: s.intraBw,
+        intraNhops: s.intraNhops,
+        rank,
+      })),
+      chosen: gpus[candidates[0].g].id,
+    })
+  }
+
   // Try each candidate via backtracking
   for (const score of candidates) {
     const nextGpu = gpus[score.g]
     const fwdKey = pathKey(current.id, nextGpu.id)
-    const fwdPath = getPath(system, current.id, nextGpu.id)!
 
-    // Consume bandwidth (with Intel P2P overhead if applicable)
-    const prevBw = state.remainingBw.get(fwdKey) ?? fwdPath.bandwidth
+    // Consume bandwidth on the path's LINKS (followPath, search.cc:79-91)
+    const prevBw = pathRemaining(state, fwdKey)
     const fwdCost = effectiveCost(fwdKey, requiredBw, state)
-    state.remainingBw.set(fwdKey, prevBw - fwdCost)
+    consumePathBw(state, fwdKey, fwdCost)
+
+    if (tracer && traceChannel !== undefined) {
+      tracer.pushDetail({
+        kind: 'hop',
+        channel: traceChannel,
+        from: current.id,
+        to: nextGpu.id,
+        before: prevBw,
+        after: prevBw - fwdCost,
+      })
+    }
 
     visited.add(nextGpu.id)
     path.push(nextGpu.id)
@@ -312,14 +395,25 @@ function searchRingRec(
       requiredBw,
       state,
       timeout,
+      tracer,
+      traceChannel,
     )
 
     if (result) return result
 
-    // Backtrack
+    // Backtrack — restore the links
     path.pop()
     visited.delete(nextGpu.id)
-    state.remainingBw.set(fwdKey, prevBw)
+    consumePathBw(state, fwdKey, -fwdCost)
+
+    if (tracer && traceChannel !== undefined) {
+      tracer.pushDetail({
+        kind: 'backtrack',
+        channel: traceChannel,
+        at: nextGpu.id,
+        backTo: current.id,
+      })
+    }
 
     if (state.timedOut) return null
   }
@@ -337,11 +431,15 @@ function searchRingFromStart(
   requiredBw: number,
   state: SearchState,
   timeout: number,
+  tracer?: RingBuildTracer,
+  traceChannel?: number,
 ): string[] | null {
   const visited = new Set<string>([startGpu.id])
   const path = [startGpu.id]
 
-  return searchRingRec(system, gpus, visited, startGpu, startGpu, path, requiredBw, state, timeout)
+  return searchRingRec(
+    system, gpus, visited, startGpu, startGpu, path, requiredBw, state, timeout, tracer, traceChannel,
+  )
 }
 
 // =============================================================================
@@ -367,6 +465,7 @@ function searchForChannels(
   _typeInter: number,
   _crossNic: number,
   state: SearchState,
+  tracer?: RingBuildTracer,
 ): number {
   if (gpus.length <= 1) {
     // Single GPU: trivial channels
@@ -398,13 +497,24 @@ function searchForChannels(
       state.iterations = 0
 
       let ring: string[] | null = null
+      let reused = false
 
       if (sameChannels === 1 && firstRing) {
         // Reuse the same ring ordering, but check bandwidth
         ring = tryReusedRing(system, firstRing, speed, state)
+        reused = ring !== null
       } else {
         // Try each GPU as starting point
         for (let startIdx = 0; startIdx < gpus.length; startIdx++) {
+          if (tracer) {
+            tracer.push({
+              kind: 'channel-start',
+              channel: ch,
+              startGpu: gpus[startIdx].id,
+              speed,
+              reused: false,
+            })
+          }
           ring = searchRingFromStart(
             system,
             gpus,
@@ -412,6 +522,8 @@ function searchForChannels(
             speed,
             state,
             timeout,
+            tracer,
+            ch,
           )
           if (ring) break
           if (state.timedOut) break
@@ -422,8 +534,31 @@ function searchForChannels(
 
       if (ch === 0) firstRing = ring
 
-      // Consume bandwidth for this ring
-      consumeRingBandwidth(system, ring, speed, state)
+      // Consume bandwidth for this ring.
+      //
+      // The recursive search already consumed the N-1 descent edges as it
+      // built the path (mirroring NCCL's followPath, which consumes during
+      // the search and keeps the consumption on success) — so a fresh search
+      // only needs the CLOSURE edge charged here. A reused ring skipped the
+      // recursion entirely and pays for all N edges.
+      if (reused) {
+        if (tracer) {
+          tracer.push({ kind: 'channel-start', channel: ch, startGpu: ring[0], speed, reused: true })
+        }
+        consumeRingBandwidth(system, ring, speed, state, tracer, ch)
+      } else {
+        const closeFrom = ring[ring.length - 1]
+        const closeTo = ring[0]
+        const closeKey = pathKey(closeFrom, closeTo)
+        consumePathBw(state, closeKey, effectiveCost(closeKey, speed, state))
+        if (tracer) {
+          tracer.push({ kind: 'close', channel: ch, from: closeFrom, to: closeTo })
+        }
+      }
+
+      if (tracer) {
+        tracer.push({ kind: 'channel-done', channel: ch, order: [...ring] })
+      }
 
       state.channels.push({
         id: ch,
@@ -459,7 +594,7 @@ function tryReusedRing(
     const p = getPath(system, from, to)
     if (!p) return null
     const key = pathKey(from, to)
-    const remaining = state.remainingBw.get(key) ?? p.bandwidth
+    const remaining = pathRemaining(state, key)
     const cost = effectiveCost(key, speed, state)
     if (remaining < cost) return null
   }
@@ -474,6 +609,8 @@ function consumeRingBandwidth(
   ring: string[],
   speed: number,
   state: SearchState,
+  tracer?: RingBuildTracer,
+  traceChannel?: number,
 ): void {
   for (let i = 0; i < ring.length; i++) {
     const from = ring[i]
@@ -481,9 +618,16 @@ function consumeRingBandwidth(
     const p = getPath(system, from, to)
     if (!p) continue
     const key = pathKey(from, to)
-    const prev = state.remainingBw.get(key) ?? p.bandwidth
+    const prev = pathRemaining(state, key)
     const cost = effectiveCost(key, speed, state)
-    state.remainingBw.set(key, prev - cost)
+    consumePathBw(state, key, cost)
+    if (tracer && traceChannel !== undefined) {
+      if (i < ring.length - 1) {
+        tracer.pushDetail({ kind: 'hop', channel: traceChannel, from, to, before: prev, after: prev - cost })
+      } else {
+        tracer.push({ kind: 'close', channel: traceChannel, from, to })
+      }
+    }
   }
 }
 
@@ -491,10 +635,14 @@ function consumeRingBandwidth(
  * Copy entries from a Map into another Map.
  * Used instead of for-of on Map to avoid downlevelIteration requirement.
  */
-function initRemainingBw(state: SearchState, paths: Map<string, TopoPath>): void {
-  paths.forEach((path, key) => {
-    state.remainingBw.set(key, path.bandwidth)
-  })
+function initRemainingBw(state: SearchState, system: TopoSystem): void {
+  for (const link of system.links) {
+    state.remainingBw.set(linkKey(link.fromId, link.toId), link.bandwidth)
+  }
+  state.pathLinks = buildPathLinks(system)
+  for (const net of system.nodesByType.get(NodeType.NET) ?? []) {
+    state.netBw.set(net.id, net.net?.speed ?? 0)
+  }
 }
 
 /**
@@ -539,6 +687,282 @@ function effectiveCost(key: string, speed: number, state: SearchState): number {
 }
 
 // =============================================================================
+// Inter-node ring search — the RecNet pattern (search.cc:726-812)
+//
+// "Ring: NET n -> GPU a -> GPU b -> .. -> GPU x -> NET n (or m if crossNic)"
+// (search.cc:816-830). Per channel: NICs are tried in rotation starting at
+// (channel + i) % netCount, skipping NETs whose budget is below the channel
+// speed (net->bw check, :745) — bandwidth conservation forces channels to
+// spread across the rails. Under sameChannels=1 the previous channel's GPU
+// order is REPLAYED through the rotated NIC (:776-780) — which only works if
+// that NIC can reach the same entry GPU within typeInter. Otherwise the
+// relaxation cascade decides what gives (sameChannels before typeInter —
+// NCCL reorders rings before degrading NIC locality).
+// =============================================================================
+
+/** Is the stored path's type within the allowed maximum? */
+function pathTypeOk(system: TopoSystem, key: string, maxType: number): boolean {
+  const p = system.paths.get(key)
+  return !!p && p.type !== PathType.DIS && (p.type as number) <= maxType
+}
+
+interface InterRingResult {
+  order: string[]
+  netIn: string
+  netOut: string
+}
+
+/** Recursive Hamiltonian PATH search with a typed exit back to a NET. */
+function searchPathRecInter(
+  system: TopoSystem,
+  gpus: TopoNode[],
+  nets: TopoNode[],
+  visited: Set<string>,
+  current: TopoNode,
+  path: string[],
+  speed: number,
+  state: SearchState,
+  timeout: number,
+  typeIntra: number,
+  typeInter: number,
+  entryNetId: string,
+  crossNic: number,
+  tracer?: RingBuildTracer,
+  traceChannel?: number,
+): InterRingResult | null {
+  state.iterations++
+  state.globalIterations++
+  if (state.iterations > timeout || state.globalIterations > SEARCH_GLOBAL_TIMEOUT) {
+    state.timedOut = true
+    return null
+  }
+
+  // All GPUs placed — find a feasible exit NET from the LAST GPU.
+  if (path.length === gpus.length) {
+    // crossNic=0: must exit via the entry NET. Otherwise any NET with budget.
+    const exitCandidates = crossNic > 0 ? nets : nets.filter((n) => n.id === entryNetId)
+    for (const net of exitCandidates) {
+      const exitKey = pathKey(current.id, net.id)
+      if (!pathTypeOk(system, exitKey, typeInter)) continue
+      if (pathRemaining(state, exitKey) < effectiveCost(exitKey, speed, state)) continue
+      return { order: [...path], netIn: entryNetId, netOut: net.id }
+    }
+    return null
+  }
+
+  // Candidates: unvisited GPUs, intra path within typeIntra with bandwidth.
+  const candidates: GpuScore[] = []
+  for (const gpu of gpus) {
+    if (visited.has(gpu.id)) continue
+    const key = pathKey(current.id, gpu.id)
+    if (!pathTypeOk(system, key, typeIntra)) continue
+    if (pathRemaining(state, key) < effectiveCost(key, speed, state)) continue
+
+    // Score with inter fields relative to the ENTRY net (getNetPaths
+    // semantics, search.cc:246-252): netPaths = NET node's paths to GPUs.
+    const p = system.paths.get(key)
+    const netPath = system.paths.get(pathKey(entryNetId, gpu.id))
+    candidates.push({
+      g: gpu.index,
+      startIndex: gpu.index,
+      intraNhops: p?.count ?? 999,
+      intraBw: p?.bandwidth ?? 0,
+      interNhops: netPath?.count ?? 999,
+      interPciBw: netPath?.bandwidth ?? 0,
+      interBw: netPath?.bandwidth ?? 0,
+    })
+  }
+  candidates.sort(compareGpuScores)
+  // Mid-ring, prefer GPUs FAR from the net — save the near ones for the exit
+  // (ncclTopoSearchNextGpuSort's sortNet=-1 reversal, search.cc:283-289).
+  const lastStep = path.length === gpus.length - 1
+  if (!lastStep) candidates.reverse()
+
+  if (tracer && candidates.length > 0 && traceChannel !== undefined) {
+    tracer.pushDetail({
+      kind: 'consider',
+      channel: traceChannel,
+      from: current.id,
+      candidates: candidates.slice(0, 4).map((c, rank) => ({
+        id: gpus.find((g) => g.index === c.g)!.id,
+        intraBw: c.intraBw,
+        intraNhops: c.intraNhops,
+        rank,
+      })),
+      chosen: gpus.find((g) => g.index === candidates[0].g)!.id,
+    })
+  }
+
+  for (const score of candidates) {
+    const nextGpu = gpus.find((g) => g.index === score.g)!
+    const fwdKey = pathKey(current.id, nextGpu.id)
+    const before = pathRemaining(state, fwdKey)
+    const cost = effectiveCost(fwdKey, speed, state)
+    consumePathBw(state, fwdKey, cost)
+    if (tracer && traceChannel !== undefined) {
+      tracer.pushDetail({ kind: 'hop', channel: traceChannel, from: current.id, to: nextGpu.id, before, after: before - cost })
+    }
+    visited.add(nextGpu.id)
+    path.push(nextGpu.id)
+
+    const result = searchPathRecInter(
+      system, gpus, nets, visited, nextGpu, path, speed, state, timeout,
+      typeIntra, typeInter, entryNetId, crossNic, tracer, traceChannel,
+    )
+    if (result) return result
+
+    path.pop()
+    visited.delete(nextGpu.id)
+    consumePathBw(state, fwdKey, -cost)
+    if (tracer && traceChannel !== undefined) {
+      tracer.pushDetail({ kind: 'backtrack', channel: traceChannel, at: nextGpu.id, backTo: current.id })
+    }
+    if (state.timedOut) return null
+  }
+  return null
+}
+
+/** Feasibility-check + return a replay of the previous channel through `net`. */
+function tryReplayInter(
+  system: TopoSystem,
+  prev: InterRingResult,
+  net: TopoNode,
+  speed: number,
+  state: SearchState,
+  typeIntra: number,
+  typeInter: number,
+): InterRingResult | null {
+  const entryKey = pathKey(net.id, prev.order[0])
+  if (!pathTypeOk(system, entryKey, typeInter)) return null
+  if (pathRemaining(state, entryKey) < effectiveCost(entryKey, speed, state)) return null
+  for (let i = 0; i < prev.order.length - 1; i++) {
+    const key = pathKey(prev.order[i], prev.order[i + 1])
+    if (!pathTypeOk(system, key, typeIntra)) return null
+    if (pathRemaining(state, key) < effectiveCost(key, speed, state)) return null
+  }
+  const exitKey = pathKey(prev.order[prev.order.length - 1], net.id)
+  if (!pathTypeOk(system, exitKey, typeInter)) return null
+  if (pathRemaining(state, exitKey) < effectiveCost(exitKey, speed, state)) return null
+  return { order: [...prev.order], netIn: net.id, netOut: net.id }
+}
+
+/** Consume the bandwidth of a completed inter channel (entry, hops, exit, NET). */
+function consumeInterChannel(
+  system: TopoSystem,
+  r: InterRingResult,
+  speed: number,
+  state: SearchState,
+  tracer?: RingBuildTracer,
+  traceChannel?: number,
+  hopsAlreadyConsumed = false,
+): void {
+  state.netBw.set(r.netIn, (state.netBw.get(r.netIn) ?? 0) - speed)
+  consumePathBw(state, pathKey(r.netIn, r.order[0]), effectiveCost(pathKey(r.netIn, r.order[0]), speed, state))
+  if (!hopsAlreadyConsumed) {
+    for (let i = 0; i < r.order.length - 1; i++) {
+      const key = pathKey(r.order[i], r.order[i + 1])
+      const before = pathRemaining(state, key)
+      const cost = effectiveCost(key, speed, state)
+      consumePathBw(state, key, cost)
+      if (tracer && traceChannel !== undefined) {
+        tracer.pushDetail({ kind: 'hop', channel: traceChannel, from: r.order[i], to: r.order[i + 1], before, after: before - cost })
+      }
+    }
+  }
+  const exitKey = pathKey(r.order[r.order.length - 1], r.netOut)
+  consumePathBw(state, exitKey, effectiveCost(exitKey, speed, state))
+  if (tracer && traceChannel !== undefined) {
+    tracer.push({ kind: 'close', channel: traceChannel, from: r.order[r.order.length - 1], to: r.netOut })
+  }
+}
+
+/**
+ * Inter-node ring channels: NET entry → all GPUs → NET exit, per RecNet.
+ */
+function searchForChannelsInter(
+  system: TopoSystem,
+  gpus: TopoNode[],
+  speed: number,
+  maxChannels: number,
+  sameChannels: number,
+  typeIntra: number,
+  typeInter: number,
+  crossNic: number,
+  state: SearchState,
+  tracer?: RingBuildTracer,
+): number {
+  const nets = system.nodesByType.get(NodeType.NET) ?? []
+  if (nets.length === 0 || gpus.length === 0) return 0
+  const timeout = sameChannels === 1 ? SEARCH_TIMEOUT_SAMECHANNELS : SEARCH_TIMEOUT
+
+  let found = 0
+  let prev: InterRingResult | null = null
+
+  for (let ch = 0; ch < maxChannels && ch < MAXCHANNELS; ch++) {
+    state.iterations = 0
+    let result: InterRingResult | null = null
+
+    // NIC rotation with budget check (search.cc:735,745).
+    for (let i = 0; i < nets.length && !result; i++) {
+      const net = nets[(ch + i) % nets.length]
+      if ((state.netBw.get(net.id) ?? 0) < speed) continue
+
+      if (sameChannels === 1 && prev) {
+        // Replay the previous channel's order through this NIC (:776-780).
+        result = tryReplayInter(system, prev, net, speed, state, typeIntra, typeInter)
+        if (result) {
+          tracer?.push({ kind: 'channel-start', channel: ch, startGpu: result.order[0], speed, reused: true, net: net.id })
+          consumeInterChannel(system, result, speed, state, tracer, ch)
+        }
+        continue
+      }
+
+      // Fresh search: try the NET's most local GPUs as entry, best type first
+      // (:791-803), honoring typeInter on the entry path.
+      const entries = [...gpus]
+        .map((g) => ({ g, p: system.paths.get(pathKey(net.id, g.id)) }))
+        .filter((e) => e.p && (e.p.type as number) <= typeInter && e.p.type !== PathType.DIS)
+        .sort((a, b) => (a.p!.type as number) - (b.p!.type as number) || b.p!.bandwidth - a.p!.bandwidth || a.g.index - b.g.index)
+
+      for (const entry of entries) {
+        const entryKey = pathKey(net.id, entry.g.id)
+        if (pathRemaining(state, entryKey) < effectiveCost(entryKey, speed, state)) continue
+        tracer?.push({ kind: 'channel-start', channel: ch, startGpu: entry.g.id, speed, reused: false, net: net.id })
+        const visited = new Set<string>([entry.g.id])
+        result = searchPathRecInter(
+          system, gpus, nets, visited, entry.g, [entry.g.id], speed, state, timeout,
+          typeIntra, typeInter, net.id, crossNic, tracer, ch,
+        )
+        if (result) {
+          consumeInterChannel(system, result, speed, state, tracer, ch, true)
+          break
+        }
+        if (state.timedOut) break
+      }
+      if (state.timedOut) break
+    }
+
+    if (!result) break
+    if (ch === 0 || !prev) prev = result
+
+    tracer?.push({ kind: 'channel-done', channel: ch, order: [...result.order], netIn: result.netIn, netOut: result.netOut })
+    state.channels.push({
+      id: ch,
+      bandwidth: speed,
+      ringOrder: [...result.order],
+      netIn: result.netIn,
+      netOut: result.netOut,
+    })
+    found++
+    if (state.globalIterations > SEARCH_GLOBAL_TIMEOUT) {
+      state.timedOut = true
+      break
+    }
+  }
+  return found
+}
+
+// =============================================================================
 // ncclTopoSearchInit — search.cc:14-53
 //
 // Sets system.maxBw / system.totalBw with NCCL's exact semantics:
@@ -565,7 +989,7 @@ export function ncclTopoSearchInit(system: TopoSystem): void {
     return
   }
 
-  const nets = system.nodesByType.get(NodeType.NIC) ?? []
+  const nets = system.nodesByType.get(NodeType.NET) ?? []
   let maxBw = 0
   let totalBw = 0
 
@@ -612,6 +1036,7 @@ export function ncclTopoCompute(
   maxChannels: number,
   env: EnvConfig,
   log: DecisionLog,
+  tracer?: RingBuildTracer,
 ): TopoGraph {
   const patternNum = pattern as number
   const gpus = getGpuNodes(system)
@@ -706,6 +1131,19 @@ export function ncclTopoCompute(
   let bestResult: SearchResult | null = null
   let globalIterations = 0
 
+  // Build-trace bookkeeping: the parameters of the ACCEPTED solution (for the
+  // deterministic replay) and whether DupChannels doubled it afterwards.
+  let acceptedParams: { speed: number; sameChannels: number; pattern: number } | null = null
+  let dupInfo: { fromChannels: number; toChannels: number; bwBefore: number; bwAfter: number } | null = null
+
+  tracer?.push({
+    kind: 'phase',
+    label: 'Phase 1 — find a solution',
+    detail: 'Try speeds high→low, relaxing one constraint at a time until rings exist',
+    sourceRef: 'search.cc:1197-1246',
+  })
+  tracer?.push({ kind: 'speed', speed: speedArray[speedIndex], detail: 'starting speed from the table' })
+
   log.emit(
     'ringSearch',
     'Phase 1: Searching for initial solution',
@@ -730,6 +1168,8 @@ export function ncclTopoCompute(
     while (!phase1Done) {
       const state: SearchState = {
         remainingBw: new Map(),
+        pathLinks: new Map(),
+        netBw: new Map(),
         channels: [],
         iterations: 0,
         globalIterations,
@@ -738,21 +1178,27 @@ export function ncclTopoCompute(
       }
 
       // Initialize remaining bandwidth from system paths
-      initRemainingBw(state, system.paths)
+      initRemainingBw(state, system)
 
-      const nChannels = searchForChannels(
-        system,
-        gpus,
-        localPattern,
-        speed,
-        maxChannels,
-        minChannels,
-        sameChannels,
-        localTypeIntra,
-        localTypeInter,
-        localCrossNic,
-        state,
-      )
+      const nChannels =
+        system.inter && localPattern === NCCL_TOPO_PATTERN_RING
+          ? searchForChannelsInter(
+              system, gpus, speed, maxChannels, sameChannels,
+              localTypeIntra, localTypeInter, localCrossNic, state,
+            )
+          : searchForChannels(
+              system,
+              gpus,
+              localPattern,
+              speed,
+              maxChannels,
+              minChannels,
+              sameChannels,
+              localTypeIntra,
+              localTypeInter,
+              localCrossNic,
+              state,
+            )
 
       globalIterations = state.globalIterations
 
@@ -783,6 +1229,8 @@ export function ncclTopoCompute(
             typeInter: localTypeInter,
             time: state.timedOut ? 0 : -1,
           }
+          acceptedParams = { speed, sameChannels, pattern: localPattern }
+          dupInfo = null
         }
 
         // Check optimality: time == -1 means the search completed without timeout
@@ -823,6 +1271,7 @@ export function ncclTopoCompute(
           'search.cc:1145',
           ['Keep sameChannels=1 and try lower speed'],
         )
+        tracer?.push({ kind: 'relax', action: 'sameChannels 1 → 0', reason: 'allow different orderings per channel', sourceRef: 'search.cc:1206' })
         continue
       }
 
@@ -840,6 +1289,7 @@ export function ncclTopoCompute(
           'search.cc:1152',
           ['Keep BALANCED_TREE and try lower speed'],
         )
+        tracer?.push({ kind: 'relax', action: 'BALANCED_TREE → RING', reason: 'simpler pattern for Hopper+', sourceRef: 'search.cc:1217' })
         continue
       }
 
@@ -854,6 +1304,7 @@ export function ncclTopoCompute(
           'search.cc:1160',
           ['Skip to lower speed instead'],
         )
+        tracer?.push({ kind: 'relax', action: `typeIntra → ${localTypeIntra}`, reason: 'accept worse intra-node link types', sourceRef: 'search.cc:1224' })
         continue
       }
 
@@ -868,6 +1319,7 @@ export function ncclTopoCompute(
           'search.cc:1167',
           ['Skip to lower speed instead'],
         )
+        tracer?.push({ kind: 'relax', action: `typeInter → ${localTypeInter}`, reason: 'accept worse inter-node link types', sourceRef: 'search.cc:1231' })
         continue
       }
 
@@ -882,6 +1334,7 @@ export function ncclTopoCompute(
           'search.cc:1173',
           ['Skip to lower speed instead'],
         )
+        tracer?.push({ kind: 'relax', action: 'crossNic → enabled', reason: 'allow cross-NIC inter-node paths', sourceRef: 'search.cc:1239' })
         continue
       }
 
@@ -900,6 +1353,7 @@ export function ncclTopoCompute(
           [],
           { prevSpeed: speedArray[si - 1], newSpeed: speedArray[si] },
         )
+        tracer?.push({ kind: 'speed', speed: speedArray[si], detail: 'all relaxations exhausted — drop to the next table speed' })
       }
     }
   }
@@ -944,6 +1398,13 @@ export function ncclTopoCompute(
             { origChannels: bestResult.nChannels, dupChannels, origBw: bwIntra, newBw: newBwIntra },
           )
 
+          dupInfo = {
+            fromChannels: bestResult.nChannels,
+            toChannels: dupChannels,
+            bwBefore: bwIntra,
+            bwAfter: newBwIntra,
+          }
+
           bestResult = {
             ...bestResult,
             nChannels: dupChannels,
@@ -974,6 +1435,8 @@ export function ncclTopoCompute(
 
       const state: SearchState = {
         remainingBw: new Map(),
+        pathLinks: new Map(),
+        netBw: new Map(),
         channels: [],
         iterations: 0,
         globalIterations,
@@ -982,21 +1445,27 @@ export function ncclTopoCompute(
       }
 
       // Initialize remaining bandwidth
-      initRemainingBw(state, system.paths)
+      initRemainingBw(state, system)
 
-      const nChannels = searchForChannels(
-        system,
-        gpus,
-        patternNum,
-        optSpeed,
-        maxChannels,
-        minChannels,
-        0, // sameChannels=0 during optimization
-        bestResult.typeIntra,
-        bestResult.typeInter,
-        crossNic === 2 ? 0 : crossNic,
-        state,
-      )
+      const nChannels: number =
+        system.inter && patternNum === NCCL_TOPO_PATTERN_RING
+          ? searchForChannelsInter(
+              system, gpus, optSpeed, maxChannels, 0,
+              bestResult.typeIntra, bestResult.typeInter, crossNic === 2 ? 0 : crossNic, state,
+            )
+          : searchForChannels(
+              system,
+              gpus,
+              patternNum,
+              optSpeed,
+              maxChannels,
+              minChannels,
+              0, // sameChannels=0 during optimization
+              bestResult.typeIntra,
+              bestResult.typeInter,
+              crossNic === 2 ? 0 : crossNic,
+              state,
+            )
 
       globalIterations = state.globalIterations
 
@@ -1023,6 +1492,8 @@ export function ncclTopoCompute(
             typeInter: bestResult.typeInter,
             time: state.timedOut ? 0 : -1,
           }
+          acceptedParams = { speed: optSpeed, sameChannels: 0, pattern: patternNum }
+          dupInfo = null
         }
       }
 
@@ -1059,6 +1530,58 @@ export function ncclTopoCompute(
       typeInter: bestResult.typeInter,
     },
   )
+
+  // ---------------------------------------------------------------------------
+  // Build trace: deterministic replay of the ACCEPTED search. Same inputs +
+  // same ordering rules ⇒ the identical rings, now narrated hop by hop.
+  // ---------------------------------------------------------------------------
+  if (tracer && acceptedParams) {
+    tracer.push({
+      kind: 'phase',
+      label: 'Construction replay',
+      detail:
+        `Replaying the accepted search: speed=${acceptedParams.speed}, ` +
+        `sameChannels=${acceptedParams.sameChannels}`,
+      sourceRef: 'search.cc:850-970',
+    })
+    const replayState: SearchState = {
+      remainingBw: new Map(),
+      pathLinks: new Map(),
+      netBw: new Map(),
+      channels: [],
+      iterations: 0,
+      globalIterations: 0,
+      timedOut: false,
+      intelOverheadPaths,
+    }
+    initRemainingBw(replayState, system)
+    if (system.inter && acceptedParams.pattern === NCCL_TOPO_PATTERN_RING) {
+      searchForChannelsInter(
+        system, gpus, acceptedParams.speed, maxChannels, acceptedParams.sameChannels,
+        bestResult.typeIntra, bestResult.typeInter, crossNic === 2 ? 0 : crossNic,
+        replayState, tracer,
+      )
+    } else {
+      searchForChannels(
+        system,
+        gpus,
+        acceptedParams.pattern,
+        acceptedParams.speed,
+        maxChannels,
+        minChannels,
+        acceptedParams.sameChannels,
+        bestResult.typeIntra,
+        bestResult.typeInter,
+        crossNic === 2 ? 0 : crossNic,
+        replayState,
+        tracer,
+      )
+    }
+    if (dupInfo) {
+      tracer.push({ kind: 'dup', ...dupInfo, sourceRef: 'search.cc:961-974' })
+    }
+    tracer.push({ kind: 'done', nChannels: bestResult.nChannels, speed: bestResult.speedIntra })
+  }
 
   const graph: TopoGraph = {
     id: `graph-${patternNum === NCCL_TOPO_PATTERN_RING ? 'ring' : 'tree'}-${Date.now()}`,

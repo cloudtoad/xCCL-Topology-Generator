@@ -452,7 +452,8 @@ export function computeAllPaths(
   // Step 3: Gather source nodes (all GPUs and all NICs)
   const gpuNodes = system.nodesByType.get(NodeType.GPU) || []
   const nicNodes = system.nodesByType.get(NodeType.NIC) || []
-  const sourceNodes: TopoNode[] = [...gpuNodes, ...nicNodes]
+  const netNodes = system.nodesByType.get(NodeType.NET) ?? []
+  const sourceNodes: TopoNode[] = [...gpuNodes, ...nicNodes, ...netNodes]
 
   log.emit(
     'computePaths',
@@ -474,7 +475,7 @@ export function computeAllPaths(
     // For NIC sources: paths to all GPUs
     const destNodes =
       source.type === NodeType.GPU
-        ? [...gpuNodes, ...nicNodes]
+        ? [...gpuNodes, ...nicNodes, ...netNodes]
         : [...gpuNodes]
 
     for (const dest of destNodes) {
@@ -711,7 +712,8 @@ export function trimSystem(
     if (!allLocal) break
   }
 
-  system.inter = !allLocal
+  const hasNet = (system.nodesByType.get(NodeType.NET) ?? []).length > 0
+  system.inter = hasNet || !allLocal
 
   log.emit(
     'trimSystem',

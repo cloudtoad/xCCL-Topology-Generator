@@ -7,6 +7,8 @@ import { PhysicalView } from './PhysicalView'
 import { RingView } from './RingView'
 import { TreeView } from './TreeView'
 import { NvlsView } from './NvlsView'
+import { SimView } from './SimView'
+import { BuildView } from './BuildView'
 import { useUIStore } from '../../store/ui-store'
 import { useTopologyStore } from '../../store/topology-store'
 import * as THREE from 'three'
@@ -15,6 +17,7 @@ import * as THREE from 'three'
 function CameraReset() {
   const scaleView = useUIStore((s) => s.scaleView)
   const selectedServer = useUIStore((s) => s.selectedServer)
+  const viewMode = useUIStore((s) => s.viewMode)
   const system = useTopologyStore((s) => s.system)
   const isMultiNode = useMemo(
     () => !!system?.nodes.some((n) => /^s\d+-/.test(n.id)),
@@ -25,18 +28,29 @@ function CameraReset() {
   const prevView = useRef(scaleView)
   const prevServer = useRef(selectedServer)
   const prevMulti = useRef(isMultiNode)
+  const prevMode = useRef(viewMode)
 
   useEffect(() => {
     const viewChanged = prevView.current !== scaleView
     const serverChanged = scaleView === 'node' && prevServer.current !== selectedServer
     const multiChanged = prevMulti.current !== isMultiNode
+    const modeChanged = prevMode.current !== viewMode
     prevView.current = scaleView
     prevServer.current = selectedServer
     prevMulti.current = isMultiNode
+    prevMode.current = viewMode
 
-    if (!viewChanged && !serverChanged && !multiChanged) return
+    if (!viewChanged && !serverChanged && !multiChanged && !modeChanged) return
 
-    if (scaleView === 'cluster') {
+    if (viewMode === 'sim') {
+      // Head-on framing for the scoreboard row + conveyor lanes.
+      camera.position.set(0, 2.4, 17.5)
+      if (controlsRef) controlsRef.target.set(0, 2.2, 0)
+    } else if (viewMode === 'build') {
+      // Angled-down single-server framing: ring arcs read above the GPU row.
+      camera.position.set(0, 7.5, 11)
+      if (controlsRef) controlsRef.target.set(0, 0.6, -1)
+    } else if (scaleView === 'cluster') {
       // Elevated, angled-down framing so stacked server rows read as a grid.
       if (isMultiNode) camera.position.set(0, 22, 24)
       else camera.position.set(0, 8, 14)
@@ -45,7 +59,7 @@ function CameraReset() {
       camera.position.set(0, 6, 12)
       if (controlsRef) controlsRef.target.set(0, 0, -1)
     }
-  }, [scaleView, selectedServer, isMultiNode, camera, controlsRef])
+  }, [scaleView, selectedServer, isMultiNode, viewMode, camera, controlsRef])
 
   return null
 }
@@ -71,6 +85,8 @@ export function Scene3D() {
       {viewMode === 'ring' && <RingView />}
       {viewMode === 'tree' && <TreeView />}
       {viewMode === 'nvls' && <NvlsView />}
+      {viewMode === 'sim' && <SimView />}
+      {viewMode === 'build' && <BuildView />}
 
       <OrbitControls
         makeDefault

@@ -219,6 +219,11 @@ export interface GraphChannel {
   treeUp?: Map<string, string>
   treeDown?: Map<string, string[]>
 
+  // Inter-node ring endpoints (RecNet): the NET this channel enters from and
+  // exits to (differ only under crossNic). search.cc:816-830.
+  netIn?: string
+  netOut?: string
+
   // NVLS data — the NVLS graph has one channel per GPU "head" (search.cc:450:
   // "NVLS channels correspond to GPUs pulling from NVLS"). Every GPU has an
   // NVLink "up" link to nvlsSwitch; the switch reduces in-network and multicasts

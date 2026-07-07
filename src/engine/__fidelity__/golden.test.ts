@@ -51,11 +51,12 @@ describe('[G1+G2] NVSwitch link bandwidth aggregates the NVLink count', () => {
         .filter((l) => l.fromId === gpu.id && l.type === LinkType.NVL && nvsIds.has(l.toId))
         .reduce((sum, l) => sum + l.bandwidth, 0)
       expect(aggregate).toBeCloseTo(18 * SM90_NVLINK_BW, 5) // 370.8
-      // Per-switch: 370.8 / 4 = 92.7
-      const perSwitch = system.links.find(
+      // One logical NVS link at the full aggregate — NCCL presents the fabric
+      // as a single switch (#1197 shows NVS/0 @ 360 on 2.19-era constants).
+      const logical = system.links.find(
         (l) => l.fromId === gpu.id && l.type === LinkType.NVL && nvsIds.has(l.toId),
       )
-      expect(perSwitch?.bandwidth).toBeCloseTo(370.8 / 4, 5)
+      expect(logical?.bandwidth).toBeCloseTo(18 * SM90_NVLINK_BW, 5)
     }
   })
 })
@@ -105,8 +106,8 @@ describe('[G3] "=== System : maxBw/totalBw" semantics (search.cc:14-53)', () => 
   test('DGX H100 totalBw = per-GPU NVLink aggregate (370.8), not a system sum', () => {
     const result = runInit(dgxH100Config, createDefaultEnvConfig())
     expect(result.system.totalBw).toBeCloseTo(18 * SM90_NVLINK_BW, 5) // 370.8
-    // maxBw = best GPU→GPU path (one switch hop at 92.7)
-    expect(result.system.maxBw).toBeCloseTo(370.8 / 4, 5)
+    // maxBw = best GPU→GPU path — the full aggregate via the logical switch
+    expect(result.system.maxBw).toBeCloseTo(18 * SM90_NVLINK_BW, 5)
   })
 })
 

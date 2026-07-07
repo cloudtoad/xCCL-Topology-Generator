@@ -243,7 +243,7 @@ describe('buildTopoSystem', () => {
     expect(gpus.length).toBe(8)
     expect(cpus.length).toBe(2)
     expect(nics.length).toBe(8)
-    expect(nvs.length).toBe(4)
+    expect(nvs.length).toBe(1) // one logical NVS node (#1197 shows a single NVS/0)
     expect(pci.length).toBe(4) // 2 switches/CPU * 2 CPUs
   })
 
@@ -252,13 +252,13 @@ describe('buildTopoSystem', () => {
     const log = new DecisionLog()
     const system = buildTopoSystem(dgxH100Config, env, log)
 
-    // Every GPU should connect to every NVSwitch
+    // Every GPU connects to the single logical NVS node (both directions):
     const nvlLinks = system.links.filter(l => l.type === LinkType.NVL)
-    // 8 GPUs * 4 NVSwitches * 2 directions = 64
-    expect(nvlLinks.length).toBe(64)
+    // 8 GPUs * 1 logical NVS * 2 directions = 16
+    expect(nvlLinks.length).toBe(16)
     // Link bw aggregates the NVLink count (topo.cc:856 count×nvlBw):
-    // 18 links × 20.6 spread over 4 switches = 92.7 per GPU↔switch link.
-    expect(nvlLinks[0].bandwidth).toBeCloseTo((18 * SM90_NVLINK_BW) / 4, 5)
+    // 18 links × 20.6 = 370.8 on the one logical link (#1197: 360 = 18×20.0).
+    expect(nvlLinks[0].bandwidth).toBeCloseTo(18 * SM90_NVLINK_BW, 5)
   })
 
   test('MI300X: xGMI mesh links present', () => {
@@ -329,11 +329,11 @@ describe('SPFA path computation for DGX H100', () => {
     }
   })
 
-  test('GPU-GPU bandwidth = aggregated NVLink bw via one switch', () => {
+  test('GPU-GPU bandwidth = aggregated NVLink bw via the logical switch', () => {
     const p = getPath(system, 'gpu-0', 'gpu-1')
     expect(p).toBeDefined()
-    // Bottleneck of GPU→NVS→GPU where each hop is 18×20.6/4 (topo.cc:856).
-    expect(p!.bandwidth).toBeCloseTo((18 * SM90_NVLINK_BW) / 4, 5)
+    // Bottleneck of GPU→NVS→GPU where each hop is the full 18×20.6 aggregate.
+    expect(p!.bandwidth).toBeCloseTo(18 * SM90_NVLINK_BW, 5)
   })
 
   test('GPU-NIC same socket = PIX path type', () => {
@@ -385,8 +385,8 @@ describe('SPFA path computation for HGX A100', () => {
     const p = getPath(system, 'gpu-0', 'gpu-3')
     expect(p).toBeDefined()
     expect(p!.type).toBe(PathType.NVL)
-    // A100: 12 NVLinks × 20.0 spread over 6 switches = 40 per hop (topo.cc:856).
-    expect(p!.bandwidth).toBeCloseTo((12 * SM80_NVLINK_BW) / 6, 5)
+    // A100: 12 NVLinks × 20.0 = 240 aggregate on the logical NVS hop.
+    expect(p!.bandwidth).toBeCloseTo(12 * SM80_NVLINK_BW, 5)
   })
 })
 
@@ -944,7 +944,7 @@ describe('nvlsSupport (init.cc:nvlsSupport)', () => {
     const { system, env, log, ccMin } = prepSystem(dgxH100Config)
     const s = nvlsSupport(system, ccMin, env, log)
     expect(s.supported).toBe(true)
-    expect(s.nSwitches).toBe(4)
+    expect(s.nSwitches).toBe(1) // one logical NVS node
     expect(s.nGpus).toBe(8)
   })
 
@@ -1012,13 +1012,10 @@ describe('computeNvlsGraph (search.cc NCCL_TOPO_PATTERN_NVLS)', () => {
     expect(g.nChannels).toBe(Math.min(32, 8)) // min(NCCL_MAX_NVLS_ARITY, nGPUs)
   })
 
-  test('heads round-robin across the NVSwitch fabric', () => {
+  test('all heads anchor on the single logical NVS node', () => {
     const { system, log, ccMin } = prepSystem(dgxH100Config)
     const g = computeNvlsGraph(system, ccMin, log)
-    // 4 switches → head c anchors on nvs-(c % 4).
-    expect(g.channels[0].nvlsSwitch).toBe('nvs-0')
-    expect(g.channels[1].nvlsSwitch).toBe('nvs-1')
-    expect(g.channels[4].nvlsSwitch).toBe('nvs-0')
+    for (const ch of g.channels) expect(ch.nvlsSwitch).toBe('nvs-0')
   })
 })
 

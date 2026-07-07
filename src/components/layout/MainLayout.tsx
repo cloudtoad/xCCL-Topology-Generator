@@ -3,10 +3,13 @@ import { Toolbar } from './Toolbar'
 import { BuilderSidebar } from '../builder/BuilderSidebar'
 import { InfoPanel } from '../info/InfoPanel'
 import { Scene3D } from '../viewer/Scene3D'
+import { SimControls } from '../controls/SimControls'
+import { BuildControls } from '../controls/BuildControls'
 
 export function MainLayout() {
   const sidePanel = useUIStore((s) => s.sidePanel)
   const infoPanel = useUIStore((s) => s.infoPanel)
+  const viewMode = useUIStore((s) => s.viewMode)
 
   return (
     <div className="h-screen flex flex-col bg-surface-900">
@@ -22,6 +25,8 @@ export function MainLayout() {
         {/* Center 3D canvas */}
         <div className="flex-1 relative">
           <Scene3D />
+          {viewMode === 'sim' && <SimControls />}
+          {viewMode === 'build' && <BuildControls />}
         </div>
 
         {/* Right info panel */}
