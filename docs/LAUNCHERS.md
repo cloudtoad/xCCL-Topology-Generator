@@ -180,7 +180,7 @@ group initializes, rank 0 calls `ncclGetUniqueId` and `set()`s the blob under a
 well-known key; every other rank blocks on `get()` (ProcessGroupNCCL's
 broadcast-unique-id step). Every subgroup created later (`new_group()`) moves its own
 uniqueId through the **same store** — one KV server serves the job's entire lifetime of
-communicator creation.
+communicator creation. Deep-dive on the store itself: [TCPSTORE.md](TCPSTORE.md).
 
 Squint and the TCPStore is a re-invention of PMI's KVS, one ecosystem over — the same
 put/fence/get shape, unstandardized, incompatible, solving the identical problem. This

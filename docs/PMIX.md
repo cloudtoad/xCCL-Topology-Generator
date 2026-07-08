@@ -202,7 +202,7 @@ Seen from that angle, the whole stack this project documents is one pattern at t
 altitudes: **PMIx** (endpoints exchanged through an unspecified middle), **NCCL
 bootstrap** (a bespoke unversioned struct-copy protocol behind a launcher-delivered
 address), and **the TCPStore** (the same KVS, reinvented in Python's ecosystem because
-the other two belonged to someone else's stack). Three rendezvous systems, one shape,
+the other two belonged to someone else's stack — deep-dive: [TCPSTORE.md](TCPSTORE.md)). Three rendezvous systems, one shape,
 zero shared wire formats — the signature of protocols developed outside the protocol
 community, each solving session establishment as a private implementation detail rather
 than a public contract.
