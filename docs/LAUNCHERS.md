@@ -129,6 +129,7 @@ real-world paths:
    Interface — is the HPC world's *standardized version of the hodge-podge*: the
    launcher exposes a key-value store (put/fence/get) over the slurmstepd channels, MPI
    wires itself up through it, and then you're in the mpirun pattern above.
+   Deep-dive on the whole PMI/PMI-2/PMIx lineage: [PMIX.md](PMIX.md).
 2. **`NCCL_COMM_ID=nodeA:29500`** — NCCL-native and scheduler-shaped. The insight
    (bootstrap.cc:430-458): the default uniqueId contains two values unknowable before
    runtime — an ephemeral OS-assigned port and a random 64-bit magic. `NCCL_COMM_ID`
