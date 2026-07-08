@@ -228,7 +228,7 @@ export const CURRICULUM: CurriculumModule[] = [
         analogy: 'Installing locally-originated routes into the RIB.',
         failureSignature: 'Wrong here means wrong everywhere after; effectively never the bug.',
         sourceRef: 'connect.cc:20',
-        gap: 'no view — cluster view shows the result, not the act',
+        view: 'walkthrough',
       },
       {
         id: 'postset',
@@ -243,7 +243,7 @@ export const CURRICULUM: CurriculumModule[] = [
           'A "broken ring" across nodes traces back to consensus disagreement or a NIC ' +
           'the far node numbered differently — never to postset itself.',
         sourceRef: 'connect.cc:380',
-        gap: 'no view — animate the stitch: exit NIC arc to next node entry NIC',
+        view: 'walkthrough',
       },
     ],
   },
@@ -265,7 +265,7 @@ export const CURRICULUM: CurriculumModule[] = [
           'has NO eligible transport; usually P2P assumed across hosts due to the ' +
           'hostHash bug from module 1.',
         sourceRef: 'transport.cc:15-42',
-        gap: 'no view — per-pair transport matrix',
+        view: 'walkthrough',
       },
       {
         id: 'qps',

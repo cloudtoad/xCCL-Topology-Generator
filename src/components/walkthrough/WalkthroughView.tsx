@@ -8,6 +8,9 @@ import { UniqueIdFig } from './figures/UniqueIdFig'
 import { BootstrapRingFig } from './figures/BootstrapRingFig'
 import { PeerTableFig } from './figures/PeerTableFig'
 import { ConsensusMergeFig } from './figures/ConsensusMergeFig'
+import { PresetFig } from './figures/PresetFig'
+import { PostsetFig } from './figures/PostsetFig'
+import { TransportSelectFig } from './figures/TransportSelectFig'
 
 const FIGURES: Record<string, React.ComponentType> = {
   launch: LaunchFig,
@@ -15,6 +18,9 @@ const FIGURES: Record<string, React.ComponentType> = {
   'bootstrap-ring': BootstrapRingFig,
   allgather1: PeerTableFig,
   consensus: ConsensusMergeFig,
+  preset: PresetFig,
+  postset: PostsetFig,
+  'transport-select': TransportSelectFig,
 }
 
 // Curriculum view bindings → app view modes ('decisions' opens the info panel).

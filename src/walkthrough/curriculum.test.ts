@@ -52,8 +52,8 @@ describe('curriculum (ground zero → established)', () => {
     }
   })
 
-  it('gapBeats() lists the remaining build list (session + consensus done)', () => {
-    expect(gapBeats().map((b) => b.id)).toEqual(['preset', 'postset', 'transport-select'])
+  it('every beat is demonstrated — the gap list is empty', () => {
+    expect(gapBeats()).toEqual([])
   })
 
   it('session and consensus beats bind to the walkthrough view', () => {
