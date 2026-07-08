@@ -265,10 +265,14 @@ export function SimView() {
   const msPerStep = useSimStore((s) => s.msPerStep)
   const advance = useSimStore((s) => s.advance)
   const loadToy = useSimStore((s) => s.loadToy)
+  const clusterTrace = useSimStore((s) => s.clusterTrace)
+  const setClusterTrace = useSimStore((s) => s.setClusterTrace)
 
   useEffect(() => {
+    // Single-server sim owns the transport here — drop any stale cluster trace.
+    if (clusterTrace) setClusterTrace(null)
     if (!trace) loadToy()
-  }, [trace, loadToy])
+  }, [trace, loadToy, clusterTrace, setClusterTrace])
 
   // Playback driver: animate pending frames 0→1, then land them.
   const progressRef = useRef(0)

@@ -8,6 +8,7 @@ import { RingView } from './RingView'
 import { TreeView } from './TreeView'
 import { NvlsView } from './NvlsView'
 import { SimView } from './SimView'
+import { ClusterSimView } from './ClusterSimView'
 import { BuildView } from './BuildView'
 import { useUIStore } from '../../store/ui-store'
 import { useTopologyStore } from '../../store/topology-store'
@@ -43,9 +44,15 @@ function CameraReset() {
     if (!viewChanged && !serverChanged && !multiChanged && !modeChanged) return
 
     if (viewMode === 'sim') {
-      // Head-on framing for the scoreboard row + conveyor lanes.
-      camera.position.set(0, 2.4, 17.5)
-      if (controlsRef) controlsRef.target.set(0, 2.2, 0)
+      if (isMultiNode) {
+        // Elevated framing: the cluster grid + rail lanes + banner.
+        camera.position.set(0, 24, 27)
+        if (controlsRef) controlsRef.target.set(0, 0, 0)
+      } else {
+        // Head-on framing for the scoreboard row + conveyor lanes.
+        camera.position.set(0, 2.4, 17.5)
+        if (controlsRef) controlsRef.target.set(0, 2.2, 0)
+      }
     } else if (viewMode === 'build') {
       // Angled-down single-server framing: ring arcs read above the GPU row.
       camera.position.set(0, 7.5, 11)
@@ -67,6 +74,7 @@ function CameraReset() {
 export function Scene3D() {
   const viewMode = useUIStore((s) => s.viewMode)
   const showGrid = useUIStore((s) => s.showGrid)
+  const clusterTopo = useTopologyStore((s) => s.clusterTopo)
 
   return (
     <Canvas
@@ -85,7 +93,7 @@ export function Scene3D() {
       {viewMode === 'ring' && <RingView />}
       {viewMode === 'tree' && <TreeView />}
       {viewMode === 'nvls' && <NvlsView />}
-      {viewMode === 'sim' && <SimView />}
+      {viewMode === 'sim' && (clusterTopo ? <ClusterSimView /> : <SimView />)}
       {viewMode === 'build' && <BuildView />}
 
       <OrbitControls

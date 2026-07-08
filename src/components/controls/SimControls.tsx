@@ -3,21 +3,28 @@ import { useSimStore } from '../../store/sim-store'
 /** Transport bar for the sim player — play/pause, step, scrub. */
 export function SimControls() {
   const trace = useSimStore((s) => s.trace)
+  const clusterTrace = useSimStore((s) => s.clusterTrace)
   const step = useSimStore((s) => s.step)
   const playing = useSimStore((s) => s.playing)
   const playPause = useSimStore((s) => s.playPause)
   const seek = useSimStore((s) => s.seek)
   const reset = useSimStore((s) => s.reset)
 
-  if (!trace) return null
+  if (!trace && !clusterTrace) return null
 
-  const phaseSteps = trace.nRanks - 1
-  const label =
-    step >= trace.totalSteps
-      ? 'complete'
-      : step < phaseSteps
+  const total = clusterTrace ? clusterTrace.nSteps : trace!.totalSteps
+  let label: string
+  if (step >= total) {
+    label = 'complete'
+  } else if (clusterTrace) {
+    label = `all-gather ${step + 1}/${total} · ${clusterTrace.nRanks} GPUs`
+  } else {
+    const phaseSteps = trace!.nRanks - 1
+    label =
+      step < phaseSteps
         ? `reduce-scatter ${step + 1}/${phaseSteps}`
         : `all-gather ${step - phaseSteps + 1}/${phaseSteps}`
+  }
 
   return (
     <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-3 px-4 py-2 rounded border border-surface-600 bg-surface-900/90 backdrop-blur">
@@ -41,7 +48,7 @@ export function SimControls() {
       <input
         type="range"
         min={0}
-        max={trace.totalSteps}
+        max={total}
         value={step}
         onChange={(e) => seek(Number(e.target.value))}
         className="w-48 accent-cyan-400"
@@ -49,7 +56,7 @@ export function SimControls() {
       />
 
       <span className="text-[11px] text-gray-400 w-40 text-left tabular-nums">
-        step {step}/{trace.totalSteps} · {label}
+        step {step}/{total} · {label}
       </span>
     </div>
   )

@@ -7,8 +7,14 @@ export function ChannelSelector() {
   const viewMode = useUIStore((s) => s.viewMode)
   const ringGraph = useTopologyStore((s) => s.ringGraph)
   const treeGraph = useTopologyStore((s) => s.treeGraph)
+  const clusterTopo = useTopologyStore((s) => s.clusterTopo)
 
-  const nChannels = (viewMode === 'tree' ? treeGraph?.nChannels : ringGraph?.nChannels) ?? 0
+  // Multi-node fast path leaves ringGraph empty — the cluster channels are
+  // the selectable set there (drives the cluster sim + rail overlays).
+  const nChannels =
+    (viewMode === 'tree' ? treeGraph?.nChannels : ringGraph?.nChannels) ||
+    clusterTopo?.nChannels ||
+    0
 
   if (nChannels === 0) {
     return (
