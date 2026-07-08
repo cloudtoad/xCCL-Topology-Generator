@@ -85,6 +85,9 @@ export interface RingBuildState {
   /** The event at idx-1 (drives the narration line). */
   lastEvent: RingBuildEvent | null
   speed: number
+  /** Inter-node: the NET each channel entered from / exits to (RecNet). */
+  netIn: Map<number, string>
+  netOut: Map<number, string>
 }
 
 export function buildStateAt(trace: RingBuildTrace, idx: number): RingBuildState {
@@ -97,6 +100,8 @@ export function buildStateAt(trace: RingBuildTrace, idx: number): RingBuildState
     budgets: new Map(),
     lastEvent: null,
     speed: 0,
+    netIn: new Map(),
+    netOut: new Map(),
   }
   const n = Math.max(0, Math.min(idx, trace.events.length))
   for (let i = 0; i < n; i++) {
@@ -111,6 +116,7 @@ export function buildStateAt(trace: RingBuildTrace, idx: number): RingBuildState
         state.currentGpu = e.startGpu
         state.lastConsider = null
         state.speed = e.speed
+        if (e.net) state.netIn.set(e.channel, e.net)
         break
       case 'consider':
         state.lastConsider = e
@@ -141,6 +147,8 @@ export function buildStateAt(trace: RingBuildTrace, idx: number): RingBuildState
         state.rings.set(e.channel, [...e.order])
         state.closed.add(e.channel)
         state.currentGpu = null
+        if (e.netIn) state.netIn.set(e.channel, e.netIn)
+        if (e.netOut) state.netOut.set(e.channel, e.netOut)
         break
       default:
         break

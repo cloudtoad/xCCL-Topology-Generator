@@ -105,8 +105,31 @@ function GpuTile({
   )
 }
 
+/** Fixed NET chip above the GPU row (inter-node search entry/exit points). */
+function NetTile({ label, position, active }: { label: string; position: Vec3; active: boolean }) {
+  return (
+    <group position={position}>
+      <mesh rotation={[-Math.PI / 2, 0, 0]}>
+        <planeGeometry args={[0.5, 0.34]} />
+        <meshStandardMaterial
+          color="#0a0a0f"
+          emissive="#ff6600"
+          emissiveIntensity={active ? 0.55 : 0.1}
+          side={DoubleSide}
+        />
+        <Edges color="#ff6600" threshold={15} />
+      </mesh>
+      <Text position={[0, 0.3, 0]} fontSize={0.13} color={active ? '#ffaa66' : '#885533'} anchorX="center">
+        {label}
+      </Text>
+    </group>
+  )
+}
+
 export function BuildView() {
-  const system = useTopologyStore((s) => s.system)
+  const displaySystem = useTopologyStore((s) => s.system)
+  const buildSystem = useTopologyStore((s) => s.buildSystem)
+  const system = buildSystem ?? displaySystem
   const ringBuildTrace = useTopologyStore((s) => s.ringBuildTrace)
   const trace = useBuildStore((s) => s.trace)
   const idx = useBuildStore((s) => s.idx)
@@ -139,6 +162,7 @@ export function BuildView() {
 
   const gpus = useMemo(() => system?.nodesByType.get(NodeType.GPU) ?? [], [system])
   const nvs = useMemo(() => system?.nodesByType.get(NodeType.NVS) ?? [], [system])
+  const nets = useMemo(() => system?.nodesByType.get(NodeType.NET) ?? [], [system])
 
   if (!system || !trace || !state) {
     return (
@@ -188,6 +212,16 @@ export function BuildView() {
   const posOf = new Map<string, Vec3>()
   displayOrder.forEach((id, i) => posOf.set(id, slotPos(i)))
 
+  // NET chips: fixed row behind the GPU slots (inter-node search only).
+  const netPosOf = new Map<string, Vec3>()
+  nets.forEach((n, i) => {
+    netPosOf.set(n.id, [(i - (nets.length - 1) / 2) * SLOT_SPACING, 0.02, rowZ - 3.0])
+  })
+  const currentNetIn =
+    state.currentChannel !== null ? state.netIn.get(state.currentChannel) : undefined
+  const currentNetOut =
+    state.currentChannel !== null ? state.netOut.get(state.currentChannel) : undefined
+
   return (
     <group>
       {/* GPUs — tiles slide into their ring slots */}
@@ -220,6 +254,16 @@ export function BuildView() {
         )
       })}
 
+      {/* NET chips (inter-node search entry/exit points) */}
+      {nets.map((n) => (
+        <NetTile
+          key={n.id}
+          label={n.label ?? n.id}
+          position={netPosOf.get(n.id)!}
+          active={n.id === currentNetIn || n.id === currentNetOut}
+        />
+      ))}
+
       {/* Rings: in-progress bold, completed dimmed into context */}
       {[...state.rings.entries()].map(([channel, order]) => {
         const color = channelColors[channel % channelColors.length]
@@ -231,10 +275,24 @@ export function BuildView() {
           const b = posOf.get(order[i + 1])
           if (a && b) segs.push({ key: `${channel}-${i}`, pts: arc(a, b, lift) })
         }
-        if (state.closed.has(channel) && order.length > 1) {
-          const a = posOf.get(order[order.length - 1])
+        // Inter-node ring: entry arc NET → first GPU; exit arc last GPU → NET
+        // at closure. Intra ring: wrap arc last → first at closure.
+        const chNetIn = state.netIn.get(channel)
+        const chNetOut = state.netOut.get(channel)
+        if (chNetIn && order.length > 0) {
+          const a = netPosOf.get(chNetIn)
           const b = posOf.get(order[0])
-          if (a && b) segs.push({ key: `${channel}-close`, pts: arc(a, b, lift + 0.35) })
+          if (a && b) segs.push({ key: `${channel}-netin`, pts: arc(a, b, lift * 0.7) })
+        }
+        if (state.closed.has(channel) && order.length > 1) {
+          const last = posOf.get(order[order.length - 1])
+          if (chNetOut) {
+            const netP = netPosOf.get(chNetOut)
+            if (last && netP) segs.push({ key: `${channel}-netout`, pts: arc(last, netP, lift * 0.7) })
+          } else {
+            const first = posOf.get(order[0])
+            if (last && first) segs.push({ key: `${channel}-close`, pts: arc(last, first, lift + 0.35) })
+          }
         }
         return (
           <group key={channel}>

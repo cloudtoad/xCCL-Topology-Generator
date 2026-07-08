@@ -12,6 +12,10 @@ function prose(e: RingBuildEvent | null): string {
     case 'relax':
       return `No solution yet → relax: ${e.action} (${e.reason}, ${e.sourceRef}).`
     case 'channel-start':
+      if (e.net)
+        return e.reused
+          ? `Channel ${e.channel}: enter from ${e.net.replace('net-', 'NET ')} (NIC rotation, search.cc:735) — try replaying the previous ordering first.`
+          : `Channel ${e.channel}: enter from ${e.net.replace('net-', 'NET ')} at its rail's local GPU ${e.startGpu.replace('gpu-', '')} @ ${e.speed} GB/s (search.cc:791).`
       return e.reused
         ? `Channel ${e.channel}: reuse channel 0's ordering (sameChannels=1) if bandwidth remains.`
         : `Channel ${e.channel}: start a fresh ring at ${e.startGpu} @ ${e.speed} GB/s.`
@@ -27,8 +31,12 @@ function prose(e: RingBuildEvent | null): string {
       return `Dead end at ${e.at.replace('gpu-', 'GPU ')} — no feasible next hop. Backtrack to ${e.backTo.replace('gpu-', 'GPU ')} and restore the bandwidth.`
     case 'close':
       return `Ring ${e.channel} closes: ${e.from.replace('gpu-', 'GPU ')} → ${e.to.replace('gpu-', 'GPU ')} completes the Hamiltonian cycle.`
-    case 'channel-done':
-      return `Channel ${e.channel} locked in: ${e.order.map((g) => g.replace('gpu-', '')).join(' → ')} — the row is now in ring order; the wrap arc closes the cycle.`
+    case 'channel-done': {
+      const chain = e.order.map((g) => g.replace('gpu-', '')).join(' → ')
+      if (e.netIn)
+        return `Channel ${e.channel} locked in: ${e.netIn.replace('net-', 'NET ')} → ${chain} → ${(e.netOut ?? e.netIn).replace('net-', 'NET ')}${e.netOut && e.netOut !== e.netIn ? ' (crossNic!)' : ''} — exits to the far node; the stitch closes the global ring (search.cc:816-830).`
+      return `Channel ${e.channel} locked in: ${chain} — the row is now in ring order; the wrap arc closes the cycle.`
+    }
     case 'dup':
       return `DupChannels: bandwidth allows doubling — ${e.fromChannels} rings × ${e.bwBefore} GB/s become ${e.toChannels} × ${e.bwAfter} GB/s (${e.sourceRef}).`
     case 'done':

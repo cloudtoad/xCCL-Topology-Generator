@@ -18,6 +18,7 @@ import { GraphPattern, NodeType } from './types'
 import { MAXCHANNELS, nvlsRuntimeChannels } from './constants/nccl'
 import { buildTopoSystem } from './topo'
 import { createMultiNodeTopology } from './multi-node'
+import { attachRailNetwork } from './network'
 import { computeAllPaths, trimSystem } from './paths'
 import { ncclTopoCompute } from './search'
 import { buildTreeGraph } from './trees'
@@ -52,7 +53,8 @@ export interface InitResult {
   nvlsReason: string          // why NVLS is / isn't supported
   nvlsRuntimeChannels: number // runtime CTA count (16/24/32), 0 when unsupported
   tuning: TuningResult | null // representative large-message algorithm choice
-  ringBuildTrace: RingBuildTrace | null // hop-by-hop ring construction (single-server)
+  ringBuildTrace: RingBuildTrace | null // hop-by-hop ring construction (single-server + 2-node)
+  buildSystem: TopoSystem | null // the searched system when ≠ display system (2-node: local view + NETs)
   clusterTopo: ClusterTopology | null // true multi-node channel rings (multi-node only)
   qpPlan: QPPlan | null // network queue pairs derived from inter-node ring edges
   log: DecisionLog
@@ -113,6 +115,123 @@ export function runInit(
   const system = isMultiNode
     ? createMultiNodeTopology(config, suConfig, env, log)
     : buildTopoSystem(config, env, log)
+
+  // -------------------------------------------------------------------------
+  // TRUE 2-node path: run the real inter-node search instead of the fast
+  // path's precomputed stitch. NCCL's multi-node search is each rank
+  // searching its OWN local topology with NET nodes attached (search.cc:
+  // 816-830) — so the searched system is a single server + rail-paired NETs,
+  // while the full 2-server system is kept for the Physical view.
+  // -------------------------------------------------------------------------
+  if (isMultiNode && suConfig.serverCount === 2) {
+    log.emit(
+      'searchInit',
+      '2-node path: real inter-node ring search on the local view',
+      'Local topo + NET per NIC (rail-paired, NICx↔NICx); NIC rotation, NET ' +
+        'budgets and typed entry/exit per RecNet — traced for the Build view',
+      'search.cc:726-830',
+      ['Multi-node fast path (precomputed stitch)'],
+      { serverCount: 2, nicCount: config.nic.count },
+    )
+
+    const localView = buildTopoSystem(config, env, log)
+    attachRailNetwork(localView, log)
+    computeAllPaths(localView, env, log)
+    trimSystem(localView, env, log)
+    computeAllPaths(localView, env, log)
+
+    const nGpus = (localView.nodesByType.get(NodeType.GPU) ?? []).length
+    let minChannels = getEnvInt(env, 'NCCL_MIN_NCHANNELS')
+    let maxChannels = getEnvInt(env, 'NCCL_MAX_NCHANNELS')
+    if (minChannels < 0) minChannels = 1
+    if (maxChannels < 0) maxChannels = MAXCHANNELS
+    minChannels = Math.max(1, Math.min(minChannels, MAXCHANNELS))
+    maxChannels = Math.max(minChannels, Math.min(maxChannels, MAXCHANNELS))
+
+    const ringTracer = new RingBuildTracer()
+    const ringGraph = performRingSearch(localView, minChannels, maxChannels, nGpus, env, log, ringTracer)
+    const treeGraph = buildTreeGraph(ringGraph, nGpus, log)
+    setupRings(ringGraph, log)
+    const connected = setupChannels(localView, ringGraph, treeGraph, log)
+
+    // NVLS still applies intra-node on a 2-node fabric (runtime CTAs use the
+    // multi-node count).
+    const gpuNodes = localView.nodesByType.get(NodeType.GPU) ?? []
+    let ccMin = Infinity
+    for (const g of gpuNodes) {
+      if (g.gpu && g.gpu.cudaCompCap < ccMin) ccMin = g.gpu.cudaCompCap
+    }
+    const ccMinVal = Number.isFinite(ccMin) ? ccMin : 0
+    const nvls = nvlsSupport(localView, ccMinVal, env, log)
+    let nvlsGraph: TopoGraph | null = null
+    let nvlsRuntimeCh = 0
+    if (nvls.supported) {
+      nvlsGraph = computeNvlsGraph(localView, ccMinVal, log)
+      nvlsRuntimeCh = nvlsRuntimeChannels(ccMinVal, true)
+      const nvlsOverride = getEnvInt(env, 'NCCL_NVLS_NCHANNELS')
+      if (nvlsOverride > 0) nvlsRuntimeCh = nvlsOverride
+      if (nvlsGraph.nChannels === 0) {
+        nvlsGraph = null
+        nvls.supported = false
+        nvls.reason = 'NVLS graph search found 0 channels'
+        nvlsRuntimeCh = 0
+      }
+    }
+
+    // Cluster rings + QPs from the REAL inter channels: each channel's intra
+    // chain came out of the traced search (entry = rail NIC's local GPU).
+    let intraOrders = intraOrdersFromRingGraph(connected.ringGraph)
+    if (intraOrders.length === 0) {
+      intraOrders = [Array.from({ length: config.gpu.count }, (_, g) => g)]
+    }
+    const clusterTopo = buildClusterChannels({
+      serverCount: 2,
+      gpuPerServer: config.gpu.count,
+      nicCount: config.nic.count,
+      railCount: suConfig.railCount,
+      intraOrders,
+    })
+    const qpPlan = buildQPs(clusterTopo)
+
+    const tuning = selectAlgorithm(
+      localView, connected.ringGraph, connected.treeGraph, nvlsGraph,
+      128 * 1024 * 1024, nGpus, ccMinVal, env, log,
+    )
+
+    log.emit(
+      'channelSetup',
+      'GRAPH dump (NCCL log format)',
+      formatTopoGraph(connected.ringGraph),
+      'search.cc:1319 ncclTopoPrintGraph',
+      [],
+      { graphLines: [formatTopoGraph(connected.ringGraph)] },
+    )
+    log.emit(
+      'searchInit',
+      `2-node init complete: ${connected.ringGraph.nChannels} inter channels, ${qpPlan.total} QPs`,
+      `Each channel: NET n → GPU chain → NET n (crossNic=0); ` +
+        `QPs = ${connected.ringGraph.nChannels} × 2 nodes × ${qpPlan.qpsPerConnection}/conn`,
+      'search.cc:816-830, net_ib/connect.cc:60',
+      [],
+      { nChannels: connected.ringGraph.nChannels, totalQPs: qpPlan.total },
+    )
+
+    return {
+      system,
+      ringGraph: connected.ringGraph,
+      treeGraph: connected.treeGraph,
+      nvlsGraph,
+      nvlsSupported: nvls.supported,
+      nvlsReason: nvls.reason,
+      nvlsRuntimeChannels: nvlsRuntimeCh,
+      tuning,
+      ringBuildTrace: ringTracer.events.length > 0 ? ringTracer.toTrace() : null,
+      buildSystem: localView,
+      clusterTopo,
+      qpPlan,
+      log,
+    }
+  }
 
   // -------------------------------------------------------------------------
   // Multi-node fast path: skip expensive SPFA and search for visualization.
@@ -206,6 +325,7 @@ export function runInit(
       nvlsRuntimeChannels: 0,
       tuning: null,
       ringBuildTrace: null,
+      buildSystem: null,
       clusterTopo,
       qpPlan,
       log,
@@ -500,6 +620,7 @@ export function runInit(
     nvlsRuntimeChannels: nvlsRuntimeCh,
     tuning,
     ringBuildTrace: ringTracer.events.length > 0 ? ringTracer.toTrace() : null,
+    buildSystem: null,
     clusterTopo: null,
     qpPlan: null,
     log,

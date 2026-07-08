@@ -35,7 +35,7 @@ export function ViewModeSelector() {
             title={
               disabled
                 ? m.value === 'build'
-                  ? 'Build walkthrough needs a generated single-server topology'
+                  ? 'Build walkthrough needs a generated topology (single-server or 2 servers)'
                   : `NVLS unavailable — ${nvlsReason}`
                 : undefined
             }
