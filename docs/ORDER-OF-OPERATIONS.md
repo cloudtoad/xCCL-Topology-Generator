@@ -50,11 +50,29 @@ framework split:
 | `NCCL_COMM_ID=host:port` | env var — every rank dials the address | manual (operator) |
 | Single-process (`ncclCommInitAll`) | in-memory | automatic |
 
+*Per-launcher deep dives — identity assignment, uniqueId transport, network legs, and
+failure signatures for mpirun / srun / torchrun — in [LAUNCHERS.md](LAUNCHERS.md).*
+
 ### P2 — The bootstrap ring (`bootstrapInit`, init.cc:1916; bootstrap.cc:259-390)
 Every rank phones the root; the root collects each rank's listen address and forwards each
 rank **its successor's address** as it checks in (bootstrap.cc:361-385) — forming a TCP
 socket ring rank→rank+1. **The first ring NCCL builds is made of sockets, before any
 topology exists.** All out-of-band collectives (`bootstrapAllGather`) walk this ring.
+
+What each rank retains for the communicator's lifetime (`bootstrapState`, bootstrap.cc:514-527):
+two live sockets (to rank+1, from rank−1), its own OOB listen socket, the **address book**
+(`peerP2pAddresses` — every rank's listen address, gathered as the ring's first cargo,
+`ringAllInfo` :620-655), proxy addresses, and the `magic` session cookie stamped on every
+connection. O(1) live connections + O(nranks) addresses — why bootstrap scales. The root
+is transient: connect-send-close (:276-283); nothing about it survives init.
+
+The ring is the **management plane for the comm's lifetime**, not just init: lazy
+transport connects (transport.cc:191-344), buffer/window registration barriers
+(mem_manager.cc:418-896), NVLS binding (nvls.cc:366), `ncclCommSplit` (child ring
+negotiated over the parent's, bootstrap.cc:891-934), finalize/destroy barriers. Only
+`bootstrapAllGather` circulates the ring; point-to-point OOB direct-dials the address
+book. Steady-state training generates zero bootstrap traffic — idle-timeout middleboxes
+that kill the quiet sockets surface much later as a hang in the NEXT control-plane op.
 
 ### P3 — Peer discovery & node detection (AllGather1, init.cc:1034-1067)
 Each rank fills `ncclPeerInfo` (busId, **hostHash**, …, init.cc:711-717) and
