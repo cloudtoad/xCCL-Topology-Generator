@@ -24,6 +24,24 @@ export interface PreambleBeat {
 
 export const PREAMBLE_BEATS: PreambleBeat[] = [
   {
+    id: 'ground-zero',
+    title: 'Ground zero — code placement & spawn',
+    narration:
+      'Before any process exists: the same bytes must be runnable on every host, and ' +
+      'something must start them. No launcher copies your binary per-job — sameness is ' +
+      'infrastructural (shared filesystem or container image). The spawn mechanisms ' +
+      'differ: Slurm\'s persistent slurmd daemons, MPI\'s ssh-spawned daemon tree, or ' +
+      'torchrun\'s bring-your-own agents.',
+    analogy:
+      'Rack-and-stack plus ZTP: boxes must exist and boot the same image before any ' +
+      'protocol can speak a word.',
+    failureSignature:
+      'Version skew — a stale NFS cache or one pod on yesterday\'s image — launches ' +
+      'FINE and surfaces two phases later as "WARN Mismatched NCCL version detected". ' +
+      'No negotiation in this protocol, only after-the-fact verification.',
+    sourceRef: 'docs/LAUNCHERS.md P−1; init.cc:1042',
+  },
+  {
     id: 'launch',
     title: 'Launch & device binding',
     narration:
@@ -53,6 +71,43 @@ export const PREAMBLE_BEATS: PreambleBeat[] = [
       'Ranks hang in ncclCommInitRank with ZERO NCCL output — the ID never arrived, or ' +
       'the root address is unreachable from their network.',
     sourceRef: 'init.cc:183',
+  },
+  {
+    id: 'three-stores',
+    title: 'The three rendezvous stores',
+    narration:
+      'The same key-value rendezvous has been independently built three times: ' +
+      'PMI/PMIx (put/fence/get, served by the scheduler), NCCL\'s own bootstrap ' +
+      '(check-in ring + address book), and PyTorch\'s TCPStore (set/blocking-get/CAS). ' +
+      'One shape, three ecosystems, zero shared bytes — and a security gradient that ' +
+      'runs BACKWARD: MUNGE handshake, then a random cookie, then nothing at all.',
+    analogy:
+      'As if every routing vendor invented its own incompatible neighbor discovery, ' +
+      'and interop\'s answer was "run one vendor per cluster."',
+    failureSignature:
+      'Each store fails in its own dialect — PMI flavor mismatch, bootstrap interface ' +
+      'unroutable, TCPStore endpoint resolving to 127.0.0.1 — but the shape is shared: ' +
+      'a fence waiting forever for a rank that already died.',
+    sourceRef: 'docs/PMIX.md; docs/TCPSTORE.md',
+  },
+  {
+    id: 'convergence',
+    title: 'The landing — primed to initialize',
+    narration:
+      'Regardless of how the servers in the fabric got to this point — an MPI_Bcast, a ' +
+      'static env var, a blocking store get — every rank now holds the identical four ' +
+      'facts: its RANK, the WORLD_SIZE, a bound GPU, and the same 128 bytes. The paths ' +
+      'are indistinguishable in the state they produced, the launcher is out of the ' +
+      'story, and xCCL is primed to initialize in earnest across the fabric: ' +
+      'ncclCommInitRank() begins.',
+    analogy:
+      'All IGPs, statics, and redistributions funnel into one RIB — and from here, a ' +
+      'single best-path process runs the same way no matter who fed it.',
+    failureSignature:
+      'If the four facts are NOT identical (wrong world size, duplicate rank, stale ' +
+      'uniqueId from a previous run), init does not error — it waits forever for a ' +
+      'world that will never complete.',
+    sourceRef: 'init.cc:1831',
   },
   {
     id: 'bootstrap-ring',

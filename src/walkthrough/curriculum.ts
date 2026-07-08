@@ -44,6 +44,7 @@ export const CURRICULUM: CurriculumModule[] = [
     title: 'Session establishment',
     analogy: 'BGP session bring-up: Idle → Connect → OpenSent → Established',
     beats: [
+      fromPreamble('ground-zero', { view: 'walkthrough' }),
       fromPreamble('launch', { view: 'walkthrough' }),
       fromPreamble('rendezvous', {
         showCommand:
@@ -51,6 +52,8 @@ export const CURRICULUM: CurriculumModule[] = [
           'zero-padded to 128 bytes (static_assert it fits, bootstrap.h:14-20)',
         view: 'walkthrough',
       }),
+      fromPreamble('three-stores', { view: 'walkthrough' }),
+      fromPreamble('convergence', { view: 'walkthrough' }),
       fromPreamble('bootstrap-ring', {
         showCommand: 'NCCL_DEBUG_SUBSYS=BOOTSTRAP → "Bootstrap: Using eth0" (bootstrap.cc:133)',
         view: 'walkthrough',

@@ -18,7 +18,7 @@ describe('curriculum (ground zero → established)', () => {
 
   it('every beat is source-cited and carries analogy + failure signature', () => {
     for (const b of allBeats()) {
-      expect(b.sourceRef, b.id).toMatch(/^[a-z_/.]+\.(cc|h):\d+/)
+      expect(b.sourceRef, b.id).toMatch(/^([a-z_/.]+\.(cc|h):\d+|docs\/[A-Z]+\.md)/)
       expect(b.analogy.length, b.id).toBeGreaterThan(10)
       expect(b.failureSignature.length, b.id).toBeGreaterThan(20)
     }

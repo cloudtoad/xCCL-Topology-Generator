@@ -4,8 +4,11 @@ import { PREAMBLE_BEATS, preambleBeat } from './preamble'
 describe('walkthrough preamble (Phase P)', () => {
   it('has the six phases in session-establishment order', () => {
     expect(PREAMBLE_BEATS.map((b) => b.id)).toEqual([
+      'ground-zero',
       'launch',
       'rendezvous',
+      'three-stores',
+      'convergence',
       'bootstrap-ring',
       'allgather1',
       'local-search',
@@ -15,7 +18,7 @@ describe('walkthrough preamble (Phase P)', () => {
 
   it('every beat carries a source citation into ref/src', () => {
     for (const b of PREAMBLE_BEATS) {
-      expect(b.sourceRef).toMatch(/^[a-z_]+\.(cc|h):\d+/)
+      expect(b.sourceRef).toMatch(/^([a-z_]+\.(cc|h):\d+|docs\/[A-Z]+\.md)/)
     }
   })
 
