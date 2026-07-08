@@ -5,6 +5,7 @@ import { InfoPanel } from '../info/InfoPanel'
 import { Scene3D } from '../viewer/Scene3D'
 import { SimControls } from '../controls/SimControls'
 import { BuildControls } from '../controls/BuildControls'
+import { WalkthroughView } from '../walkthrough/WalkthroughView'
 
 export function MainLayout() {
   const sidePanel = useUIStore((s) => s.sidePanel)
@@ -22,11 +23,17 @@ export function MainLayout() {
           </div>
         )}
 
-        {/* Center 3D canvas */}
+        {/* Center: 3D canvas, or the DOM walkthrough */}
         <div className="flex-1 relative">
-          <Scene3D />
-          {viewMode === 'sim' && <SimControls />}
-          {viewMode === 'build' && <BuildControls />}
+          {viewMode === 'walkthrough' ? (
+            <WalkthroughView />
+          ) : (
+            <>
+              <Scene3D />
+              {viewMode === 'sim' && <SimControls />}
+              {viewMode === 'build' && <BuildControls />}
+            </>
+          )}
         </div>
 
         {/* Right info panel */}

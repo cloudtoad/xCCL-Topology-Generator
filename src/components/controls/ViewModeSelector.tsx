@@ -2,6 +2,7 @@ import { useUIStore, type ViewMode } from '../../store/ui-store'
 import { useTopologyStore } from '../../store/topology-store'
 
 const viewModes: { value: ViewMode; label: string }[] = [
+  { value: 'walkthrough', label: 'Guide' },
   { value: 'physical', label: 'Physical' },
   { value: 'build', label: 'Build' },
   { value: 'ring', label: 'Ring' },

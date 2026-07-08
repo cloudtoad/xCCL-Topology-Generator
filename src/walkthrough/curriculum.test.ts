@@ -52,16 +52,13 @@ describe('curriculum (ground zero → established)', () => {
     }
   })
 
-  it('gapBeats() lists the wrapper build list (currently 8)', () => {
-    expect(gapBeats().map((b) => b.id)).toEqual([
-      'launch',
-      'rendezvous',
-      'bootstrap-ring',
-      'allgather1',
-      'consensus',
-      'preset',
-      'postset',
-      'transport-select',
-    ])
+  it('gapBeats() lists the remaining build list (session + consensus done)', () => {
+    expect(gapBeats().map((b) => b.id)).toEqual(['preset', 'postset', 'transport-select'])
+  })
+
+  it('session and consensus beats bind to the walkthrough view', () => {
+    for (const id of ['launch', 'rendezvous', 'bootstrap-ring', 'allgather1', 'consensus']) {
+      expect(allBeats().find((b) => b.id === id)?.view).toBe('walkthrough')
+    }
   })
 })

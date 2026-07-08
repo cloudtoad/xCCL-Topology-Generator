@@ -20,7 +20,7 @@ export interface CurriculumBeat extends PreambleBeat {
   /** The NCCL_DEBUG / env observable — the "show command" for this beat. */
   showCommand?: string
   /** App view that demonstrates this beat, if built. */
-  view?: 'physical' | 'build' | 'sim' | 'decisions'
+  view?: 'physical' | 'build' | 'sim' | 'decisions' | 'walkthrough'
   /** Set when the visualization for this beat does not exist yet. */
   gap?: string
 }
@@ -44,22 +44,22 @@ export const CURRICULUM: CurriculumModule[] = [
     title: 'Session establishment',
     analogy: 'BGP session bring-up: Idle → Connect → OpenSent → Established',
     beats: [
-      fromPreamble('launch', { gap: 'no view — narrated card only' }),
+      fromPreamble('launch', { view: 'walkthrough' }),
       fromPreamble('rendezvous', {
         showCommand:
           'The "OPEN message" format: ncclUniqueId = ncclBootstrapHandle {magic, addr, nRanks} ' +
           'zero-padded to 128 bytes (static_assert it fits, bootstrap.h:14-20)',
-        gap: 'no view — narrated card + byte-layout figure',
+        view: 'walkthrough',
       }),
       fromPreamble('bootstrap-ring', {
         showCommand: 'NCCL_DEBUG_SUBSYS=BOOTSTRAP → "Bootstrap: Using eth0" (bootstrap.cc:133)',
-        gap: 'no view — animate root check-in forming the socket ring',
+        view: 'walkthrough',
       }),
       fromPreamble('allgather1', {
         showCommand:
           'The "LSA contents": ncclPeerInfo {rank, cudaDev, nvmlDev, gdrSupport, hostHash, ' +
           'pidHash, shmDev, busId, gpuUuid, cudaCompCap, ...} (transport.h:43-63)',
-        gap: 'no view — peer table filling in as gathers arrive',
+        view: 'walkthrough',
       }),
     ],
   },
@@ -210,7 +210,7 @@ export const CURRICULUM: CurriculumModule[] = [
       fromPreamble('consensus', {
         showCommand:
           'rank 0 prints "Local Net device counts across ranks: min X max Y" (init.cc:1319)',
-        gap: 'no view — show per-rank tuples merging into the agreed row',
+        view: 'walkthrough',
       }),
     ],
   },
