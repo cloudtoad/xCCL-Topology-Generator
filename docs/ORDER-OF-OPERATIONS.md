@@ -27,6 +27,87 @@ L6  Transport → QPs    transport.cc:123 one net send + one net recv per node p
 
 ---
 
+## Phase P — Before the search: launch → rendezvous → bootstrap → discovery
+
+Everything in L0–L6 presumes a communicator mid-initialization. Three acts come first —
+and this is where the manual/automatic split between frameworks lives.
+
+### P0 — Launch & device binding (outside NCCL entirely)
+The launcher (torchrun / mpirun / srun) assigns `RANK`, `WORLD_SIZE`, `LOCAL_RANK`; the
+framework binds a device (`cudaSetDevice(LOCAL_RANK)` or equivalent). **The rank↔device
+mapping is decided here** — one reason printed ring orders look scrambled relative to
+device numbering before NCCL even runs.
+
+### P1 — The rendezvous (`ncclGetUniqueId`, init.cc:183)
+Rank 0 creates the unique ID — which is really *the bootstrap root's socket address plus a
+magic number*. It must travel to every rank **out-of-band**, and how it travels is the
+framework split:
+
+| Framework | Transport for the uniqueId | Manual/automatic |
+|---|---|---|
+| Raw NCCL + MPI | `MPI_Bcast` of the 128-byte ID | **manual** (you write it) |
+| PyTorch (torchrun) | TCPStore rendezvous | automatic |
+| `NCCL_COMM_ID=host:port` | env var — every rank dials the address | manual (operator) |
+| Single-process (`ncclCommInitAll`) | in-memory | automatic |
+
+### P2 — The bootstrap ring (`bootstrapInit`, init.cc:1916; bootstrap.cc:259-390)
+Every rank phones the root; the root collects each rank's listen address and forwards each
+rank **its successor's address** as it checks in (bootstrap.cc:361-385) — forming a TCP
+socket ring rank→rank+1. **The first ring NCCL builds is made of sockets, before any
+topology exists.** All out-of-band collectives (`bootstrapAllGather`) walk this ring.
+
+### P3 — Peer discovery & node detection (AllGather1, init.cc:1034-1067)
+Each rank fills `ncclPeerInfo` (busId, **hostHash**, …, init.cc:711-717) and
+`bootstrapAllGather`s it. Then the structural facts are *derived*, not configured:
+- **"Node" is a hostHash equivalence class** (`fillInfo` sets `hostHash = getHostHash() +
+  commHash`, init.cc:717; the multi-node check compares hashes at :1048). Nobody tells
+  NCCL the cluster shape — it discovers it.
+- Multi-rank-per-GPU detection, MNNVL domain detection (init.cc:1053-1084) follow.
+- The *final* node numbering comes even later, from AllGather3: a node is identified by
+  `topoRanks.ringRecv[0]` — **the first rank of its ring channel 0** (init.cc:1291-1300
+  builds `nodesFirstRank`/`rankToNode` from the exchanged ring data). Node identity is
+  literally derived from ring structure.
+
+Only now does topology detection (`ncclTopoGetSystem`) run — entering L0. And one more
+cross-rank step lives *between* graph computation and channel wiring, included in the
+pipeline table below as step 6b: **AllGather3** (init.cc:969-996, 1257-1275) — every rank
+publishes its independently computed graph parameters (`pattern, nChannels, sameChannels,
+bwIntra/bwInter, types`) plus `topoRanks`, and the ranks **reconcile to an agreed
+communicator-wide plan** before any channel is wired. The merge rule (init.cc:1438-1446)
+is a capability negotiation, BGP-style:
+
+| Field | Merge | Meaning |
+|---|---|---|
+| `nChannels, sameChannels, bwIntra, bwInter` | **min** across ranks | you can't use channels/bandwidth your slowest peer doesn't have |
+| `typeIntra, typeInter, crossNic` | **max** across ranks | the worst path type anywhere becomes everyone's path type |
+
+**The communicator is only as strong as its weakest rank.** This is also where NVLS is
+revoked if its search found zero channels (`nvlsSupport = 0`, init.cc:1446), and where a
+mixed NIC count across ranks warns/errors (`NCCL_IGNORE_NET_MISMATCH`, init.cc:1318-1340).
+
+### P-phase troubleshooting — symptom → phase
+
+Like BGP: nobody debugs best-path until the session is Established. When init "mysteriously
+hangs," walk the phases in order — each has a distinct failure signature:
+
+| Symptom | Phase | What actually broke | Source |
+|---|---|---|---|
+| Hang in `ncclCommInitRank`, zero NCCL output on some ranks | P1 | uniqueId never reached them, or root address unreachable from their network | init.cc:183 |
+| Hang with `Bootstrap: Using <if>` showing the **wrong interface** (mgmt vs fabric) | P2 | interface selection — fix `NCCL_SOCKET_IFNAME` (retries: `NCCL_SOCKET_RETRY_CNT`=34 × `NCCL_SOCKET_RETRY_SLEEP_MSEC`=100ms) | bootstrap.cc:133, socket.cc:19-20, 196 |
+| Some ranks connect, others time out | P2 | firewall between rank and root, or multi-homed host advertising the wrong listen address | bootstrap.cc:355-390 |
+| `WARN Mismatched NCCL version detected` | P3 | heterogeneous NCCL builds in one communicator | init.cc:1042-1046 |
+| Two hosts treated as one node (SHM across machines → crash) or one host split into two nodes (NET between local GPUs → perf mystery) | P3 | hostHash = hash(hostname + `/proc/sys/kernel/random/boot_id`), overridable via `NCCL_HOSTID` — containers/images can corrupt either input | utils.cc:95, 117-158 |
+| `WARN Multiple Ranks are using the same GPU` | P3 | launcher bound two ranks to one device (`LOCAL_RANK` mapping bug) | init.cc:1053-1060 |
+| Channel count / bandwidth mysteriously lower than the hardware supports | 6b | consensus min: ONE straggler rank (downtrained PCIe, missing NIC, flat VM topo) drags every rank's graph down | init.cc:1438-1446 |
+| `WARN Detected mixed local Net device counts` | 6b | ranks disagree on NIC count — real hardware asymmetry or detection failure on one host | init.cc:1318-1340 |
+| NVLS silently absent from tuning | 6b | NVLS search found 0 channels somewhere → support revoked communicator-wide | init.cc:1446 |
+
+The diagnostic tool for all of it: `NCCL_DEBUG=INFO` (add `NCCL_DEBUG_SUBSYS=BOOTSTRAP,INIT`
+to focus). The INFO lines appear in exactly the phase order above — **the last line printed
+tells you which phase died.**
+
+---
+
 ## L0 — The pipeline (once per communicator)
 
 `init.cc` (`initTransportsRank`) runs these in strict order:
@@ -39,6 +120,7 @@ L6  Transport → QPs    transport.cc:123 one net send + one net recv per node p
 | 4 | Recompute paths | `ncclTopoComputePaths` | 1147 | `paths.ts computeAllPaths` |
 | 5 | Search init | `ncclTopoSearchInit` | 1149 | (folded into search) |
 | 6 | Compute graphs | `ncclTopoCompute` ×N | 1178–1215 | `search.ts` / `nvls.ts` |
+| 6b | Cross-rank graph consensus | AllGather3 (`bootstrapAllGather`) | 969-996, 1257-1275 | (not modeled — single-rank engine) |
 | 7 | Preset channels/trees | `ncclTopoPreset` | 1281 | `trees.ts` / `connect.ts` |
 | 8 | Connect across nodes | `ncclTopoPostset` | 1480 | `connect.ts setupChannels` |
 | 9 | Establish transports (QPs) | `ncclTransportP2pSetup` | 1631 | `qp.ts` (modeled) |
