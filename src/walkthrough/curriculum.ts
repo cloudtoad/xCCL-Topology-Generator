@@ -44,6 +44,7 @@ export const CURRICULUM: CurriculumModule[] = [
     title: 'Session establishment',
     analogy: 'BGP session bring-up: Idle → Connect → OpenSent → Established',
     beats: [
+      fromPreamble('bare-metal', { view: 'walkthrough' }),
       fromPreamble('ground-zero', { view: 'walkthrough' }),
       fromPreamble('launch', { view: 'walkthrough' }),
       fromPreamble('rendezvous', {

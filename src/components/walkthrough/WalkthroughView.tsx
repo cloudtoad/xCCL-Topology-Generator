@@ -8,6 +8,7 @@ import { UniqueIdFig } from './figures/UniqueIdFig'
 import { BootstrapRingFig } from './figures/BootstrapRingFig'
 import { PeerTableFig } from './figures/PeerTableFig'
 import { ConsensusMergeFig } from './figures/ConsensusMergeFig'
+import { PreInitFig } from './figures/PreInitFig'
 import { GroundZeroFig } from './figures/GroundZeroFig'
 import { TrilogyFig } from './figures/TrilogyFig'
 import { ConvergenceFig } from './figures/ConvergenceFig'
@@ -16,6 +17,7 @@ import { PostsetFig } from './figures/PostsetFig'
 import { TransportSelectFig } from './figures/TransportSelectFig'
 
 const FIGURES: Record<string, React.ComponentType> = {
+  'bare-metal': PreInitFig,
   'ground-zero': GroundZeroFig,
   'three-stores': TrilogyFig,
   convergence: ConvergenceFig,

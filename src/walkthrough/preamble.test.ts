@@ -4,6 +4,7 @@ import { PREAMBLE_BEATS, preambleBeat } from './preamble'
 describe('walkthrough preamble (Phase P)', () => {
   it('has the six phases in session-establishment order', () => {
     expect(PREAMBLE_BEATS.map((b) => b.id)).toEqual([
+      'bare-metal',
       'ground-zero',
       'launch',
       'rendezvous',

@@ -24,6 +24,25 @@ export interface PreambleBeat {
 
 export const PREAMBLE_BEATS: PreambleBeat[] = [
   {
+    id: 'bare-metal',
+    title: 'From bare OS to first packet — the three roads',
+    narration:
+      'Four boxes, four GPUs each, each GPU with its own backend NIC — and nothing ' +
+      'running but an OS. Every step below places something on a box or sets a ' +
+      'variable, down one of three roads (scheduler, MPI runtime, containers), until ' +
+      'sixteen ranks each hold the four facts and NCCL can dial the root. Watch the ' +
+      'backend NICs: they stay dark the entire time. Pre-init never touches the RDMA ' +
+      'fabric.',
+    analogy:
+      'Day-0/day-1 provisioning before any protocol speaks: rack, image, mgmt network, ' +
+      'THEN the routing process starts. Same discipline, different rack.',
+    failureSignature:
+      'Every "mysterious NCCL hang" with zero output lives somewhere in these frames — ' +
+      'a step that silently didn\'t happen on ONE box: image not pulled, daemon not ' +
+      'up, env var not exported, port not reachable.',
+    sourceRef: 'docs/LAUNCHERS.md',
+  },
+  {
     id: 'ground-zero',
     title: 'Ground zero — code placement & spawn',
     narration:
