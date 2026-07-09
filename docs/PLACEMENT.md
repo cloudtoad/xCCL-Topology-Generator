@@ -65,6 +65,15 @@ This is where "ring neighbors are SU neighbors" is actually enforced.
   — Google's `cloud.google.com/gce-topology-{block,subblock,host}` labels.
 - [Nebius: Topology-aware scheduling for GPU workloads](https://docs.nebius.com/kubernetes/gpu/topology-aware-scheduling)
   — a neocloud's operator guide (representative of the class).
+- [NVIDIA Run:ai topology-aware scheduling](https://run-ai-docs.nvidia.com/saas/platform-management/aiinitiatives/resources/topology-aware-scheduling)
+  — NVIDIA's commercial scheduler: admin declares an ordered hierarchy of label keys
+  (region → zone → block → hostname), `Preferred` (co-locate, escalate upward) vs
+  `Required` (hard fence) constraints, default Preferred at the lowest level; feeds
+  from Topograph, with **NetQ** as the on-prem discovery source (switch telemetry →
+  NetQ → Topograph → labels → scheduler). Notably: **no rank ordering** — it packs the
+  gang into a domain but doesn't order pods within it. "All pods in the same block"
+  (Run:ai) and "pod k adjacent to pod k+1" (Kueue rank-ordering) are different
+  guarantees, and only the second is the one rank-arithmetic rings actually consume.
 
 **Cloud topology APIs (the raw material):**
 - **AWS**: [EC2 Instance Topology](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-instance-topology.html)
