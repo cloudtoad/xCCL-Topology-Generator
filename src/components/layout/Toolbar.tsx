@@ -10,8 +10,6 @@ import { ViewModeSelector } from '../controls/ViewModeSelector'
 import { ChannelSelector } from '../controls/ChannelSelector'
 
 export function Toolbar() {
-  const sidePanel = useUIStore((s) => s.sidePanel)
-  const setSidePanel = useUIStore((s) => s.setSidePanel)
   const infoPanel = useUIStore((s) => s.infoPanel)
   const setInfoPanel = useUIStore((s) => s.setInfoPanel)
   const scaleView = useUIStore((s) => s.scaleView)
@@ -126,12 +124,6 @@ export function Toolbar() {
       <div className="flex-1" />
 
       {/* Panel toggles */}
-      <button
-        onClick={() => setSidePanel(sidePanel === 'builder' ? 'none' : 'builder')}
-        className={`btn-secondary text-[10px] ${sidePanel === 'builder' ? 'text-neon-cyan border-neon-cyan/30' : ''}`}
-      >
-        Builder
-      </button>
       <button
         onClick={() => setInfoPanel(infoPanel === 'info' ? 'none' : 'info')}
         className={`btn-secondary text-[10px] ${infoPanel !== 'none' ? 'text-neon-cyan border-neon-cyan/30' : ''}`}

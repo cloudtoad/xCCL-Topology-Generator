@@ -192,7 +192,11 @@ function RingPage({ channel, channelIndex, totalChannels, gpuMap, color }: RingP
 }
 
 export function RingView() {
-  const system = useTopologyStore((s) => s.system)
+  const displaySystem = useTopologyStore((s) => s.system)
+  const buildSystem = useTopologyStore((s) => s.buildSystem)
+  // Two-node scenario: graphs were computed on the searched local view (+NETs),
+  // whose node ids the channel orders reference — render on that system.
+  const system = buildSystem ?? displaySystem
   const ringGraph = useTopologyStore((s) => s.ringGraph)
   const selectedChannel = useUIStore((s) => s.selectedChannel)
 

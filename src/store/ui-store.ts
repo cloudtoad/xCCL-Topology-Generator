@@ -37,9 +37,9 @@ interface UIState {
 
 export const useUIStore = create<UIState>((set, get) => ({
   mode: 'nccl',
-  viewMode: 'physical',
+  viewMode: 'walkthrough',
   scaleView: 'cluster',
-  sidePanel: 'builder',
+  sidePanel: 'none',
   infoPanel: 'info',
   selectedChannel: null,
   selectedNodes: [],

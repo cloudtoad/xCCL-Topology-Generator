@@ -1,5 +1,4 @@
 import { useUIStore, type ViewMode } from '../../store/ui-store'
-import { useTopologyStore } from '../../store/topology-store'
 
 const viewModes: { value: ViewMode; label: string }[] = [
   { value: 'walkthrough', label: 'Guide' },
@@ -14,37 +13,20 @@ const viewModes: { value: ViewMode; label: string }[] = [
 export function ViewModeSelector() {
   const viewMode = useUIStore((s) => s.viewMode)
   const setViewMode = useUIStore((s) => s.setViewMode)
-  const nvlsSupported = useTopologyStore((s) => s.nvlsSupported)
-  const ringBuildTrace = useTopologyStore((s) => s.ringBuildTrace)
-  const nvlsReason = useTopologyStore((s) => s.nvlsReason)
 
   return (
     <div className="flex items-center gap-1">
       <span className="text-[10px] text-gray-500 mr-1 uppercase">View</span>
       {viewModes.map((m) => {
-        // The NVLS view is only meaningful when NVLS is supported by the topology.
-        const disabled =
-          (m.value === 'nvls' && !nvlsSupported) ||
-          (m.value === 'build' && !ringBuildTrace)
         const isActive = viewMode === m.value
         return (
           <button
             key={m.value}
-            onClick={() => !disabled && setViewMode(m.value)}
-            disabled={disabled}
-            title={
-              disabled
-                ? m.value === 'build'
-                  ? 'Build walkthrough needs a generated topology (single-server or 2 servers)'
-                  : `NVLS unavailable — ${nvlsReason}`
-                : undefined
-            }
+            onClick={() => setViewMode(m.value)}
             className={`px-2 py-1 text-[10px] font-medium rounded transition-all duration-150 border ${
-              disabled
-                ? 'text-gray-700 border-transparent cursor-not-allowed'
-                : isActive
-                  ? 'text-neon-cyan border-neon-cyan/30 bg-neon-cyan/10'
-                  : 'text-gray-500 border-transparent hover:text-gray-300'
+              isActive
+                ? 'text-neon-cyan border-neon-cyan/30 bg-neon-cyan/10'
+                : 'text-gray-500 border-transparent hover:text-gray-300'
             }`}
           >
             {m.label}

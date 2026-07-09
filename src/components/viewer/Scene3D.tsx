@@ -12,6 +12,7 @@ import { ClusterSimView } from './ClusterSimView'
 import { BuildView } from './BuildView'
 import { useUIStore } from '../../store/ui-store'
 import { useTopologyStore } from '../../store/topology-store'
+import { useSimStore } from '../../store/sim-store'
 import * as THREE from 'three'
 
 /** Frames the camera for cluster/node view — and when a cluster is generated. */
@@ -75,6 +76,7 @@ export function Scene3D() {
   const viewMode = useUIStore((s) => s.viewMode)
   const showGrid = useUIStore((s) => s.showGrid)
   const clusterTopo = useTopologyStore((s) => s.clusterTopo)
+  const simMode = useSimStore((s) => s.simMode)
 
   return (
     <Canvas
@@ -93,7 +95,7 @@ export function Scene3D() {
       {viewMode === 'ring' && <RingView />}
       {viewMode === 'tree' && <TreeView />}
       {viewMode === 'nvls' && <NvlsView />}
-      {viewMode === 'sim' && (clusterTopo ? <ClusterSimView /> : <SimView />)}
+      {viewMode === 'sim' && (simMode === 'cluster' && clusterTopo ? <ClusterSimView /> : <SimView />)}
       {viewMode === 'build' && <BuildView />}
 
       <OrbitControls

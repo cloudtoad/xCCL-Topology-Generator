@@ -1,28 +1,28 @@
+import { useEffect } from 'react'
 import { useUIStore } from '../../store/ui-store'
 import { Toolbar } from './Toolbar'
-import { BuilderSidebar } from '../builder/BuilderSidebar'
 import { InfoPanel } from '../info/InfoPanel'
+import { scenarioFor, loadScenario } from '../../scenarios'
 import { Scene3D } from '../viewer/Scene3D'
 import { SimControls } from '../controls/SimControls'
 import { BuildControls } from '../controls/BuildControls'
 import { WalkthroughView } from '../walkthrough/WalkthroughView'
 
 export function MainLayout() {
-  const sidePanel = useUIStore((s) => s.sidePanel)
   const infoPanel = useUIStore((s) => s.infoPanel)
   const viewMode = useUIStore((s) => s.viewMode)
+
+  // Auto-load the canonical example each view runs on (2-node for the
+  // search-detail views, 4-node for the cluster views). Preload the cluster
+  // scenario at mount so the first view switch is instant.
+  useEffect(() => {
+    loadScenario(scenarioFor(viewMode) ?? 'four-node')
+  }, [viewMode])
 
   return (
     <div className="h-screen flex flex-col bg-surface-900">
       <Toolbar />
       <div className="flex-1 flex overflow-hidden">
-        {/* Left sidebar */}
-        {sidePanel === 'builder' && (
-          <div className="w-80 flex-shrink-0 border-r border-surface-600 overflow-y-auto">
-            <BuilderSidebar />
-          </div>
-        )}
-
         {/* Center: 3D canvas, or the DOM walkthrough */}
         <div className="flex-1 relative">
           {viewMode === 'walkthrough' ? (

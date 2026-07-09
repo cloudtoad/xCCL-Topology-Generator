@@ -233,7 +233,11 @@ function ChainPage({ channel, channelIndex, totalChannels, gpuMap, color }: Chai
 }
 
 export function TreeView() {
-  const system = useTopologyStore((s) => s.system)
+  const displaySystem = useTopologyStore((s) => s.system)
+  const buildSystem = useTopologyStore((s) => s.buildSystem)
+  // Two-node scenario: graphs were computed on the searched local view (+NETs),
+  // whose node ids the channel orders reference — render on that system.
+  const system = buildSystem ?? displaySystem
   const treeGraph = useTopologyStore((s) => s.treeGraph)
   const selectedChannel = useUIStore((s) => s.selectedChannel)
 

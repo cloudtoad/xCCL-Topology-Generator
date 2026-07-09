@@ -15,12 +15,17 @@ import type { AllGatherTrace } from '../sim/allgather'
 // mode takes precedence when set (the views keep them mutually exclusive).
 // =============================================================================
 
+type SimMode = 'cluster' | 'toy'
+
 interface SimState {
   trace: AllReduceTrace | null
   clusterTrace: AllGatherTrace | null
+  simMode: SimMode
   step: number
   playing: boolean
   msPerStep: number
+
+  setSimMode: (mode: SimMode) => void
 
   loadToy: () => void
   setClusterTrace: (trace: AllGatherTrace | null) => void
@@ -39,9 +44,12 @@ function totalSteps(s: { trace: AllReduceTrace | null; clusterTrace: AllGatherTr
 export const useSimStore = create<SimState>((set, get) => ({
   trace: null,
   clusterTrace: null,
+  simMode: 'cluster',
   step: 0,
   playing: false,
   msPerStep: 1600,
+
+  setSimMode: (simMode) => set({ simMode, step: 0, playing: false }),
 
   loadToy: () => set({ trace: toyAllReduce(), step: 0, playing: false }),
 

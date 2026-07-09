@@ -7,6 +7,8 @@ export function SimControls() {
   const step = useSimStore((s) => s.step)
   const playing = useSimStore((s) => s.playing)
   const playPause = useSimStore((s) => s.playPause)
+  const simMode = useSimStore((s) => s.simMode)
+  const setSimMode = useSimStore((s) => s.setSimMode)
   const seek = useSimStore((s) => s.seek)
   const reset = useSimStore((s) => s.reset)
 
@@ -28,6 +30,22 @@ export function SimControls() {
 
   return (
     <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-3 px-4 py-2 rounded border border-surface-600 bg-surface-900/90 backdrop-blur">
+      <div className="flex gap-1 mr-1">
+        <button
+          onClick={() => setSimMode('cluster')}
+          title="sim-mode-cluster"
+          className={`px-2 py-0.5 text-[10px] rounded border ${simMode === 'cluster' ? 'text-neon-cyan border-neon-cyan/40 bg-neon-cyan/10' : 'text-gray-500 border-surface-600'}`}
+        >
+          cluster · 32
+        </button>
+        <button
+          onClick={() => setSimMode('toy')}
+          title="sim-mode-toy"
+          className={`px-2 py-0.5 text-[10px] rounded border ${simMode === 'toy' ? 'text-neon-cyan border-neon-cyan/40 bg-neon-cyan/10' : 'text-gray-500 border-surface-600'}`}
+        >
+          toy · 4
+        </button>
+      </div>
       <button onClick={reset} title="Reset" className="btn-secondary text-xs px-2">
         ⏮
       </button>
