@@ -76,6 +76,42 @@ This is where "ring neighbors are SU neighbors" is actually enforced.
 - GCP compact placement + the gce-topology labels above; OCI publishes analogous
   host-topology levels for its RDMA cluster networks.
 
+## Layer K — The Kubernetes floor: operators, NFD, and rank-by-naming
+
+Two mechanisms Grok-class summaries get half-right, pinned precisely:
+
+**Node-local provisioning and alignment.** The [NVIDIA GPU
+Operator](https://docs.nvidia.com/datacenter/cloud-native/gpu-operator/latest/getting-started.html)
+(Helm-deployed) installs the driver, container toolkit, device plugin, DCGM, and deploys
+**Node Feature Discovery** — which labels each node with its local hardware facts (GPU
+model/count, PCIe topology, NUMA layout), discovered via NVML/sysfs. The [Network
+Operator](https://docs.nvidia.com/networking/display/kubernetes2570/deployment-guide-kubernetes.html)
+does the same for RDMA NICs (SR-IOV, device plugins, GPUDirect plumbing). The **kubelet
+Topology Manager** (`single-numa-node` policy) then aligns CPU/GPU/NIC *allocations*
+NUMA-wise at pod-admission time — the Kubernetes analog of NCCL's intra-node awareness,
+enforced at allocation time where NCCL enforces at run time (both want the PIX GPU↔NIC
+pairing for GPUDirect). Cluster-wide fabric view: **not discovered by these operators** —
+it arrives as node labels from the provider or Topograph (Layer S). Local = measured;
+global = labeled.
+
+**Naming as the locality contract.** The deeper pattern: in Kubernetes, *rank identity
+lives in object names* — a pod's ordinal (`worker-3`, `batch.kubernetes.io/job-completion-index`,
+`training.kubeflow.org/replica-index`) IS the rank the training job will use. And
+[Kueue TAS consumes exactly that](https://kueue.sigs.k8s.io/docs/concepts/topology_aware_scheduling/):
+"Rank is a stable numeric identity for a Pod within a workload… Pods with consecutive
+indexes should be placed as close as possible in the topology tree." The
+`podIndexLabel` in a `topologyRequest` tells TAS which label carries rank; the admission
+plan assigns consecutive ranks to adjacent topology domains and injects NodeSelectors to
+pin them ([KEP-2724](https://github.com/kubernetes-sigs/kueue/blob/main/keps/2724-topology-aware-scheduling/README.md),
+[rank-ordering support](https://github.com/kubernetes-sigs/kueue/issues/3533)).
+
+Pause on what that means for the thesis: the HPC stack enforces "rank order = topology
+order" by *hostname collation folklore*; the cloud-native stack has turned the same
+convention into **checked machinery** — rank read from the object name, adjacency
+enforced by the scheduler, placement pinned before the first process starts. The most
+protocol-shaped locality mechanism in the entire tower lives in a Kubernetes admission
+controller, not in the collective library.
+
 ## Layer W — The framework: rank order carved into parallelism
 
 The user-hypothesis layer — yes, the orchestrating frameworks have explicit machinery,
@@ -147,7 +183,7 @@ by operators, not vendors:
 | same NIC index ⇒ same rail, 1 hop | RA / cabling | copper | RA PDFs |
 | addresses encode rail/SU | RA IP plan | routing config | RA PDFs |
 | allocation fits SU/block boundaries | scheduler | topology/tree/block, TAS | Slurm/Kueue docs |
-| rank order tracks node adjacency | scheduler + naming | sort order, block plugin | partially (per-tool) |
+| rank order tracks node adjacency | scheduler + naming | HPC: sort order, block plugin; K8s: Kueue TAS rank-ordering (enforced) | partially (per-tool) |
 | contiguous ranks share NVLink | framework convention | RankGenerator/DeviceMesh math | framework docs (as convention, not contract) |
 | ring/tree/QP construction from rank order | NCCL | rank arithmetic + local search | source only (and this project) |
 | **the whole column above holds simultaneously** | **nobody** | **assumed** | **nowhere** |
