@@ -83,12 +83,12 @@ const TRACKS: Track[] = [
 const BW = 218  // box width
 const BH = 260  // box height
 
-// 2×2 grid: left col x=16, right col x=298, top row y=90, bottom row y=400
+// Root on the left (vertically centered); boxes 1-3 in an arc on the right.
 const BPOS = [
-  { x: 16,  y: 90  },   // box 0: top-left  (root)
-  { x: 298, y: 90  },   // box 1: top-right
-  { x: 16,  y: 400 },   // box 2: bottom-left
-  { x: 298, y: 400 },   // box 3: bottom-right
+  { x: 16,  y: 296 },   // box 0: left, center — the ROOT
+  { x: 270, y: 16  },   // box 1: top of the arc
+  { x: 298, y: 296 },   // box 2: middle of the arc (bulge)
+  { x: 270, y: 576 },   // box 3: bottom of the arc
 ]
 
 // Four GPU-NIC columns, left edges within a box
@@ -239,8 +239,8 @@ function ServerBox({ bi, flags, track }: { bi: number; flags: Set<Flag>; track: 
         <g>
           <circle cx={x + BW + 2} cy={y + 58} r={5.5}
             fill="#221400" stroke="#ff6600" strokeWidth={1.5} />
-          <text x={x + BW + 11} y={y + 54} fill="#ff6600" fontSize={7.5}>root</text>
-          <text x={x + BW + 11} y={y + 64} fill="#885533" fontSize={7}>{track.rootPort}</text>
+          <text x={x + BW - 8} y={y + 54} textAnchor="end" fill="#ff6600" fontSize={7.5}>root</text>
+          <text x={x + BW - 8} y={y + 64} textAnchor="end" fill="#885533" fontSize={7}>{track.rootPort}</text>
         </g>
       )}
     </g>
@@ -280,15 +280,15 @@ export function PreInitFig() {
         ))}
       </div>
 
-      <svg viewBox="0 0 532 690" className="w-full">
+      <svg viewBox="0 0 532 860" className="w-full">
 
         {/* ── Infrastructure band (y = 0..88) ── */}
 
         {has(flags, 'ctl') && (
           <g>
-            <rect x={16} y={10} width={116} height={22} rx={4}
+            <rect x={16} y={252} width={116} height={22} rx={4}
               fill="#12121a" stroke="#8888aa" strokeWidth={1} />
-            <text x={74} y={25} textAnchor="middle" fill="#8888aa" fontSize={9}>
+            <text x={74} y={267} textAnchor="middle" fill="#8888aa" fontSize={9}>
               {track.ctlLabel}
             </text>
           </g>
@@ -296,13 +296,13 @@ export function PreInitFig() {
 
         {has(flags, 'fs') && (
           <g>
-            <ellipse cx={430} cy={16} rx={60} ry={9} fill="#12121a" stroke="#00ff88" strokeWidth={1} />
-            <rect x={370} y={16} width={120} height={16} fill="#12121a" stroke="#00ff88" strokeWidth={1} />
-            <ellipse cx={430} cy={32} rx={60} ry={9} fill="#12121a" stroke="#00ff88" strokeWidth={1} />
-            <text x={430} y={28} textAnchor="middle" fill="#00ff88" fontSize={8.5}>shared FS /app</text>
+            <ellipse cx={110} cy={26} rx={60} ry={9} fill="#12121a" stroke="#00ff88" strokeWidth={1} />
+            <rect x={50} y={26} width={120} height={16} fill="#12121a" stroke="#00ff88" strokeWidth={1} />
+            <ellipse cx={110} cy={42} rx={60} ry={9} fill="#12121a" stroke="#00ff88" strokeWidth={1} />
+            <text x={110} y={38} textAnchor="middle" fill="#00ff88" fontSize={8.5}>shared FS /app</text>
             {[0, 1, 2, 3].map((bi) => (
               <line key={bi}
-                x1={430} y1={41} x2={BPOS[bi].x + BW / 2} y2={BPOS[bi].y}
+                x1={110} y1={51} x2={BPOS[bi].x + BW / 2} y2={BPOS[bi].y}
                 stroke="#00ff88" strokeWidth={0.7} strokeDasharray="2 3" opacity={0.5}
               />
             ))}
@@ -311,14 +311,14 @@ export function PreInitFig() {
 
         {has(flags, 'registry') && (
           <g>
-            <rect x={366} y={9} width={148} height={26} rx={4}
+            <rect x={36} y={16} width={148} height={26} rx={4}
               fill="#12121a" stroke="#ff00ff" strokeWidth={1} />
-            <text x={440} y={26} textAnchor="middle" fill="#ff00ff" fontSize={8.5}>
+            <text x={110} y={33} textAnchor="middle" fill="#ff00ff" fontSize={8.5}>
               registry · image:v7
             </text>
             {[0, 1, 2, 3].map((bi) => (
               <line key={bi}
-                x1={440} y1={35} x2={BPOS[bi].x + BW / 2} y2={BPOS[bi].y}
+                x1={110} y1={42} x2={BPOS[bi].x + BW / 2} y2={BPOS[bi].y}
                 stroke="#ff00ff" strokeWidth={0.7} strokeDasharray="2 3" opacity={0.5}
               />
             ))}
@@ -327,35 +327,28 @@ export function PreInitFig() {
 
         {/* ── Cross-box connections ── */}
 
-        {/* ssh: box 0 → boxes 1,2,3 arcing through the top band */}
+        {/* ssh: fan from the root's right edge to each arc box's left edge */}
         {has(flags, 'ssh') && [1, 2, 3].map((bi) => {
-          const sx = BPOS[0].x + BW / 2, sy = BPOS[0].y
-          const dx = BPOS[bi].x + BW / 2, ey = BPOS[bi].y
-          const cy = Math.min(sy, ey) - 40
+          const sx = BPOS[0].x + BW, sy = BPOS[0].y + 26
+          const dx = BPOS[bi].x, ey = BPOS[bi].y + 26
+          const mx = (sx + dx) / 2
           return (
             <path key={bi}
-              d={`M ${sx} ${sy} C ${sx} ${cy} ${dx} ${cy} ${dx} ${ey}`}
+              d={`M ${sx} ${sy} Q ${mx} ${(sy + ey) / 2} ${dx} ${ey}`}
               fill="none" stroke="#8888aa" strokeWidth={1} strokeDasharray="4 3" opacity={0.7}
             />
           )
         })}
         {has(flags, 'ssh') && (
-          <text x={BPOS[1].x + 14} y={BPOS[1].y - 6} fill="#8888aa" fontSize={8}>ssh</text>
+          <text x={244} y={170} fill="#8888aa" fontSize={8}>ssh</text>
         )}
 
-        {/* daemon tree: rectangular ring — top row, bottom row, left col, right col */}
-        {has(flags, 'tree') && (
-          <>
-            <line x1={BPOS[0].x + BW} y1={dy(0)} x2={BPOS[1].x}           y2={dy(1)}
-              stroke="#aa66ff" strokeWidth={1} opacity={0.45} />
-            <line x1={BPOS[2].x + BW} y1={dy(2)} x2={BPOS[3].x}           y2={dy(3)}
-              stroke="#aa66ff" strokeWidth={1} opacity={0.45} />
-            <line x1={BPOS[0].x - 6}  y1={dy(0)} x2={BPOS[2].x - 6}       y2={dy(2)}
-              stroke="#aa66ff" strokeWidth={1} opacity={0.45} />
-            <line x1={BPOS[1].x + BW + 6} y1={dy(1)} x2={BPOS[3].x + BW + 6} y2={dy(3)}
-              stroke="#aa66ff" strokeWidth={1} opacity={0.45} />
-          </>
-        )}
+        {/* daemon links: star — root's daemon to each arc box's daemon */}
+        {has(flags, 'tree') && [1, 2, 3].map((bi) => (
+          <line key={bi}
+            x1={BPOS[0].x + BW} y1={dy(0)} x2={BPOS[bi].x} y2={dy(bi)}
+            stroke="#aa66ff" strokeWidth={1} opacity={0.45} />
+        ))}
 
         {/* uniqueId broadcast: box 0 uniqueId chip → each other box */}
         {has(flags, 'idAll') && has(flags, 'id0') && [1, 2, 3].map((bi) => {
@@ -370,42 +363,26 @@ export function PreInitFig() {
           )
         })}
 
-        {/* reach-out: boxes 1,2,3 all dial the root port on box 0 */}
+        {/* reach-out: every arc box dials the root port — a clean star */}
+        {has(flags, 'reach') && [1, 2, 3].map((bi) => {
+          const sx = BPOS[bi].x, sy = BPOS[bi].y + 58
+          const tx = BPOS[0].x + BW + 2, ty = BPOS[0].y + 58
+          return (
+            <path key={bi}
+              d={`M ${sx} ${sy} Q ${(sx + tx) / 2 - 8} ${(sy + ty) / 2} ${tx} ${ty}`}
+              fill="none" stroke="#00ff41" strokeWidth={1.6} opacity={0.85}
+            />
+          )
+        })}
         {has(flags, 'reach') && (
-          <>
-            {/* box 1 → root: short arc through the 64 px center gap */}
-            <path
-              d={`M ${BPOS[1].x + 18} ${BPOS[1].y + 60}
-                  C 278 ${BPOS[1].y + 56} 248 ${BPOS[0].y + 52}
-                    ${BPOS[0].x + BW + 2} ${BPOS[0].y + 58}`}
-              fill="none" stroke="#00ff41" strokeWidth={1.6} opacity={0.85}
-            />
-            {/* box 2 → root: arc up the outer left side */}
-            <path
-              d={`M ${BPOS[2].x + 18} ${BPOS[2].y + 60}
-                  C ${BPOS[2].x - 24} ${BPOS[2].y + 20}
-                    ${BPOS[0].x - 24} ${BPOS[0].y + 140}
-                    ${BPOS[0].x + BW + 2} ${BPOS[0].y + 58}`}
-              fill="none" stroke="#00ff41" strokeWidth={1.6} opacity={0.85}
-            />
-            {/* box 3 → root: diagonal arc through cluster center */}
-            <path
-              d={`M ${BPOS[3].x + 18} ${BPOS[3].y + 60}
-                  C 348 ${BPOS[3].y} 310 240
-                    ${BPOS[0].x + BW + 2} ${BPOS[0].y + 58}`}
-              fill="none" stroke="#00ff41" strokeWidth={1.6} opacity={0.85}
-            />
-          </>
-        )}
-        {has(flags, 'reach') && (
-          <text x={BPOS[2].x + 20} y={BPOS[2].y + 48} fill="#00ff41" fontSize={8}>
+          <text x={BPOS[0].x + BW / 2} y={BPOS[0].y + BH + 22} textAnchor="middle" fill="#00ff41" fontSize={8}>
             ncclCommInitRank → dial root
           </text>
         )}
 
         {/* management net label in the vertical center gap */}
         {(has(flags, 'ssh') || has(flags, 'tree') || has(flags, 'batch0')) && (
-          <text x={266} y={378} textAnchor="middle" fill="#004444" fontSize={7}>mgmt net</text>
+          <text x={252} y={476} textAnchor="middle" fill="#004444" fontSize={7}>mgmt net</text>
         )}
 
         {/* server boxes — rendered last so they sit on top of connection lines */}

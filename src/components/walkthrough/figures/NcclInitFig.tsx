@@ -17,10 +17,10 @@ import { useStepper, stepperLabel } from '../useStepper'
 
 const BW = 218
 const BPOS = [
-  { x: 16, y: 90 },
-  { x: 298, y: 90 },
-  { x: 16, y: 400 },
-  { x: 298, y: 400 },
+  { x: 16, y: 296 },   // box 0: left, center (the ring's rank 0-3)
+  { x: 270, y: 16 },   // box 1: top of the arc
+  { x: 298, y: 296 },  // box 2: middle of the arc
+  { x: 270, y: 576 },  // box 3: bottom of the arc
 ]
 const SLOT_X = [10, 60, 110, 160]
 const SLOT_W = 46
@@ -52,10 +52,10 @@ function edgePath(r: number): string {
   }
   // cross-box transitions: 3→4, 7→8, 11→12, 15→0
   const CTRL: Record<number, [number, number]> = {
-    3: [266, 108],   // box0 → box1, over the top gap
-    7: [206, 318],   // box1 → box2, diagonal bent left of center
-    11: [266, 418],  // box2 → box3, over the bottom gap
-    15: [330, 318],  // box3 → box0, diagonal bent right of center
+    3: [244, 190],   // box0 → box1: up through the gap
+    7: [508, 230],   // box1 → box2: bulge around the right edge
+    11: [508, 630],  // box2 → box3: bulge around the right edge
+    15: [150, 700],  // box3 → box0: sweep back under the root
   }
   const [cx, cy] = CTRL[r]
   return `M ${a.x} ${a.y} Q ${cx} ${cy} ${b.x} ${b.y}`
@@ -180,7 +180,7 @@ export function NcclInitFig({ phase }: { phase: 'ring' | 'gather' }) {
 
   return (
     <div className="font-mono text-[11px]">
-      <svg viewBox="0 0 532 690" className="w-full">
+      <svg viewBox="0 0 532 860" className="w-full">
         {/* dial-in arrows (ring phase step 0 only) */}
         {phase === 'ring' && step === 0 && [1, 2, 3].map((bi) => {
           const sx = BPOS[bi].x + BW / 2
@@ -229,19 +229,19 @@ export function NcclInitFig({ phase }: { phase: 'ring' | 'gather' }) {
           <g>
             <circle cx={BPOS[0].x + BW + 2} cy={BPOS[0].y + 58} r={5.5}
               fill="#221400" stroke="#ff6600" strokeWidth={1.5} />
-            <text x={BPOS[0].x + BW + 11} y={BPOS[0].y + 54} fill="#ff6600" fontSize={7.5}>root</text>
-            <text x={BPOS[0].x + BW + 11} y={BPOS[0].y + 64} fill="#885533" fontSize={7}>:29500</text>
+            <text x={BPOS[0].x + BW - 8} y={BPOS[0].y + 54} textAnchor="end" fill="#ff6600" fontSize={7.5}>root</text>
+            <text x={BPOS[0].x + BW - 8} y={BPOS[0].y + 64} textAnchor="end" fill="#885533" fontSize={7}>:29500</text>
           </g>
         )}
 
         {/* labels in the top band */}
-        <text x={266} y={30} textAnchor="middle" fill="#445566" fontSize={9}>
+        <text x={125} y={30} textAnchor="middle" fill="#445566" fontSize={9}>
           {phase === 'ring'
             ? 'bootstrap ring formation — management network only'
             : 'AllGather1 — ncclPeerInfo circulates the socket ring'}
         </text>
         {ringComplete && (
-          <text x={266} y={44} textAnchor="middle" fill="#2a3a4a" fontSize={7.5}>
+          <text x={125} y={44} textAnchor="middle" fill="#2a3a4a" fontSize={7.5}>
             ring order = rank order: r0→r1→…→r15→r0 · 12 intra-box hops, 4 cross-box
           </text>
         )}
