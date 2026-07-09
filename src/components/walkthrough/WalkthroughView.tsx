@@ -5,8 +5,7 @@ import { useWalkthroughStore } from '../../store/walkthrough-store'
 import { useUIStore, type ViewMode } from '../../store/ui-store'
 import { LaunchFig } from './figures/LaunchFig'
 import { UniqueIdFig } from './figures/UniqueIdFig'
-import { BootstrapRingFig } from './figures/BootstrapRingFig'
-import { PeerTableFig } from './figures/PeerTableFig'
+import { BootstrapRingBoxFig, AllGather1BoxFig } from './figures/NcclInitFig'
 import { ConsensusMergeFig } from './figures/ConsensusMergeFig'
 import { PreInitFig } from './figures/PreInitFig'
 import { GroundZeroFig } from './figures/GroundZeroFig'
@@ -23,8 +22,8 @@ const FIGURES: Record<string, React.ComponentType> = {
   convergence: ConvergenceFig,
   launch: LaunchFig,
   rendezvous: UniqueIdFig,
-  'bootstrap-ring': BootstrapRingFig,
-  allgather1: PeerTableFig,
+  'bootstrap-ring': BootstrapRingBoxFig,
+  allgather1: AllGather1BoxFig,
   consensus: ConsensusMergeFig,
   preset: PresetFig,
   postset: PostsetFig,
