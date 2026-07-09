@@ -27,7 +27,7 @@ interface Track {
   steps: TrackStep[]
 }
 
-const S0 = 'Four boxes, an OS each. GPUs and their dedicated backend NICs: dark silicon.'
+const S0 = 'Four boxes, an OS each — nothing else running. The GPUs and the RDMA fabric exist, but nothing here touches them yet.'
 
 const TRACKS: Track[] = [
   {
@@ -42,7 +42,7 @@ const TRACKS: Track[] = [
       { caption: 'srun sends step-launch RPCs to every slurmd; slurmstepd forks four tasks per box.', adds: ['procs'] },
       { caption: 'Identity was in the env before main(): SLURM_PROCID/LOCALID; cgroups bind each task to its GPU.', adds: ['identity', 'gpus'] },
       { caption: 'NCCL_COMM_ID was exported at submit — every rank rebuilds the identical handle locally; box 0 binds the well-known port. Zero bytes moved.', adds: ['commid', 'idAll', 'root'] },
-      { caption: 'Sixteen ranks, four facts each, all identical. NCCL reaches out to the root — and note: the backend NICs never lit. Everything so far rode the management network.', adds: ['reach'] },
+      { caption: 'Sixteen ranks, four facts each, all identical. NCCL reaches out to the root — and note: not one byte has touched the RDMA fabric. Everything rode the management network.', adds: ['reach'] },
     ],
   },
   {
@@ -58,7 +58,7 @@ const TRACKS: Track[] = [
       { caption: 'The launch command propagates down the tree; each daemon forks four ranks.', adds: ['procs'] },
       { caption: 'MPI_Init assigns COMM_WORLD ranks; the app maps local rank → cudaSetDevice.', adds: ['identity', 'gpus'] },
       { caption: 'Rank 0 mints the 128-byte uniqueId and binds an ephemeral root port; MPI_Bcast copies the blob to every rank.', adds: ['id0', 'root', 'idAll'] },
-      { caption: 'Every rank holds the same 128 bytes. NCCL reaches out to the root — backend NICs still dark; the blob rode MPI.', adds: ['reach'] },
+      { caption: 'Every rank holds the same 128 bytes. NCCL reaches out to the root — the blob rode MPI; the dial-in rides management TCP. The RDMA fabric is still untouched.', adds: ['reach'] },
     ],
   },
   {
@@ -80,29 +80,28 @@ const TRACKS: Track[] = [
 ]
 
 // ── geometry ─────────────────────────────────────────────────────────────────
-const BW = 218  // box width
-const BH = 260  // box height
+// Compact software-only boxes: at the preamble stage a server is processes,
+// env, and chips — the hardware band appears later (NcclInitFig onward),
+// when the story turns inward.
+const BW = 170  // box width
+const BH = 150  // box height
 
 // Root on the left (vertically centered); boxes 1-3 in an arc on the right.
 const BPOS = [
-  { x: 16,  y: 296 },   // box 0: left, center — the ROOT
-  { x: 270, y: 16  },   // box 1: top of the arc
-  { x: 298, y: 296 },   // box 2: middle of the arc (bulge)
-  { x: 270, y: 576 },   // box 3: bottom of the arc
+  { x: 16,  y: 230 },   // box 0: left, center — the ROOT
+  { x: 300, y: 56  },   // box 1: top of the arc
+  { x: 330, y: 230 },   // box 2: middle of the arc (bulge)
+  { x: 300, y: 404 },   // box 3: bottom of the arc
 ]
 
-// Four GPU-NIC columns, left edges within a box
-const SLOT_X = [10, 60, 110, 160]
-const SLOT_W = 46
+// Four rank slots, left edges within a box
+const SLOT_X = [10, 50, 90, 130]
+const SLOT_W = 34
 
 // Within-box y for each layer
-const DAEMON_Y = 28
-const PROC_Y   = 52
-const ID_Y     = PROC_Y + 74   // = 126
-const NIC_Y    = 172
-const NIC_H    = 18
-const GPU_Y    = NIC_Y + NIC_H + 8   // = 198
-const GPU_H    = 36
+const DAEMON_Y = 22
+const PROC_Y   = 44
+const ID_Y     = 108
 
 function has(flags: Set<Flag>, f: Flag) { return flags.has(f) }
 
@@ -110,7 +109,6 @@ function ServerBox({ bi, flags, track }: { bi: number; flags: Set<Flag>; track: 
   const { x, y } = BPOS[bi]
   const root  = bi === 0
   const mgmt  = has(flags, 'ssh') || has(flags, 'tree') || has(flags, 'reach') || has(flags, 'batch0')
-  const gpuLit = has(flags, 'gpus')
 
   return (
     <g>
@@ -132,9 +130,9 @@ function ServerBox({ bi, flags, track }: { bi: number; flags: Set<Flag>; track: 
       {/* daemon chip */}
       {has(flags, 'daemons') && (
         <g>
-          <rect x={x + 8} y={y + DAEMON_Y} width={68} height={16} rx={3}
+          <rect x={x + 8} y={y + DAEMON_Y} width={58} height={15} rx={3}
             fill="#1a1030" stroke="#aa66ff" strokeWidth={0.9} />
-          <text x={x + 42} y={y + DAEMON_Y + 11} textAnchor="middle" fill="#aa66ff" fontSize={8.5}>
+          <text x={x + 37} y={y + DAEMON_Y + 11} textAnchor="middle" fill="#aa66ff" fontSize={8}>
             {track.daemonName}
           </text>
         </g>
@@ -143,10 +141,10 @@ function ServerBox({ bi, flags, track }: { bi: number; flags: Set<Flag>; track: 
       {/* TCPStore chip (torchrun, box 0 only) */}
       {root && has(flags, 'store') && (
         <g>
-          <rect x={x + 82} y={y + DAEMON_Y} width={128} height={16} rx={3}
+          <rect x={x + 74} y={y + DAEMON_Y} width={70} height={15} rx={3}
             fill="#221400" stroke="#ff6600" strokeWidth={0.9} />
-          <text x={x + 146} y={y + DAEMON_Y + 11} textAnchor="middle" fill="#ff6600" fontSize={8}>
-            TCPStore · box0:29500
+          <text x={x + 109} y={y + DAEMON_Y + 11} textAnchor="middle" fill="#ff6600" fontSize={7.5}>
+            TCPStore
           </text>
         </g>
       )}
@@ -154,41 +152,45 @@ function ServerBox({ bi, flags, track }: { bi: number; flags: Set<Flag>; track: 
       {/* batch step chip (slurm, box 0 only) */}
       {root && has(flags, 'batch0') && (
         <g>
-          <rect x={x + 82} y={y + DAEMON_Y} width={80} height={16} rx={3}
+          <rect x={x + 74} y={y + DAEMON_Y} width={70} height={15} rx={3}
             fill="#101d10" stroke="#00ff41" strokeWidth={0.9} />
-          <text x={x + 122} y={y + DAEMON_Y + 11} textAnchor="middle" fill="#00ff41" fontSize={8}>
+          <text x={x + 109} y={y + DAEMON_Y + 11} textAnchor="middle" fill="#00ff41" fontSize={7.5}>
             batch step
           </text>
         </g>
       )}
 
-      {/* rank process squares */}
+      {/* rank process squares — labeled; the cgroup/device binding shows as a
+          small cyan g-tag under each rank (no hardware band at this stage) */}
       {has(flags, 'procs') && SLOT_X.map((sx, si) => (
-        <rect key={si} x={x + sx} y={y + PROC_Y} width={SLOT_W} height={34} rx={3}
-          fill="#0d1a12" stroke="#00ff88" strokeWidth={0.9} />
+        <g key={si}>
+          <rect x={x + sx} y={y + PROC_Y} width={SLOT_W} height={24} rx={3}
+            fill="#0d1a12" stroke="#00ff88" strokeWidth={0.9} />
+          <text x={x + sx + SLOT_W / 2} y={y + PROC_Y + 16} textAnchor="middle"
+            fill="#557755" fontSize={8}>r{bi * 4 + si}</text>
+          {has(flags, 'gpus') && (
+            <text x={x + sx + SLOT_W / 2} y={y + PROC_Y + 34} textAnchor="middle"
+              fill="#00ffff" fontSize={7}>↳g{si}</text>
+          )}
+        </g>
       ))}
-      {has(flags, 'procs') && (
-        <text x={x + 9} y={y + PROC_Y + 47} fill="#557755" fontSize={7}>
-          ranks {bi * 4}–{bi * 4 + 3}
-        </text>
-      )}
 
       {/* identity env line */}
       {has(flags, 'identity') && (
-        <text x={x + 9} y={y + PROC_Y + 58} fill="#8899aa" fontSize={7}>
+        <text x={x + 9} y={y + PROC_Y + 48} fill="#8899aa" fontSize={7}>
           {track.identityLine}
         </text>
       )}
 
       {/* NCCL_COMM_ID (slurm path): the address lives in the ENV */}
       {has(flags, 'commid') && (
-        <text x={x + 9} y={y + PROC_Y + 68} fill="#00ffff" fontSize={7}>
+        <text x={x + 9} y={y + PROC_Y + 58} fill="#00ffff" fontSize={7}>
           NCCL_COMM_ID=box0:29500
         </text>
       )}
       {/* mpirun/torchrun: the address lives INSIDE the 128-byte blob */}
       {track.addrLine && ((root && has(flags, 'id0')) || has(flags, 'idAll')) && (
-        <text x={x + 9} y={y + PROC_Y + 68} fill="#8899aa" fontSize={7}>
+        <text x={x + 9} y={y + PROC_Y + 58} fill="#8899aa" fontSize={7}>
           {track.addrLine}
         </text>
       )}
@@ -204,43 +206,13 @@ function ServerBox({ bi, flags, track }: { bi: number; flags: Set<Flag>; track: 
         </g>
       )}
 
-      {/* hardware section divider */}
-      <line x1={x + 8} y1={y + 163} x2={x + BW - 8} y2={y + 163}
-        stroke="#1e1e2a" strokeWidth={0.7} />
-      <text x={x + BW / 2} y={y + 160} textAnchor="middle" fill="#332211" fontSize={6.5}>
-        backend NICs — never lit during pre-init
-      </text>
-
-      {/* GPU-NIC pairs: NIC directly above its GPU with a connector stub */}
-      {SLOT_X.map((sx, si) => (
-        <g key={`hw-${si}`}>
-          <rect x={x + sx + 2} y={y + NIC_Y} width={SLOT_W - 4} height={NIC_H} rx={2}
-            fill="#0c0c14" stroke="#553311" strokeWidth={0.8} />
-          <text x={x + sx + SLOT_W / 2} y={y + NIC_Y + 12} textAnchor="middle"
-            fill="#553311" fontSize={6.5}>nic{si}</text>
-          {/* NIC→GPU pairing connector */}
-          <line
-            x1={x + sx + SLOT_W / 2} y1={y + NIC_Y + NIC_H}
-            x2={x + sx + SLOT_W / 2} y2={y + GPU_Y}
-            stroke={gpuLit ? '#1a4444' : '#1f140a'} strokeWidth={0.7}
-          />
-          <rect x={x + sx} y={y + GPU_Y} width={SLOT_W} height={GPU_H} rx={3}
-            fill={gpuLit ? '#032a2a' : '#14141c'}
-            stroke={gpuLit ? '#00ffff' : '#2a2a38'}
-            strokeWidth={1}
-          />
-          <text x={x + sx + SLOT_W / 2} y={y + GPU_Y + GPU_H / 2 + 3} textAnchor="middle"
-            fill={gpuLit ? '#00ffff' : '#333344'} fontSize={8.5}>g{si}</text>
-        </g>
-      ))}
-
       {/* root listener port (box 0, right edge) */}
       {root && has(flags, 'root') && (
         <g>
-          <circle cx={x + BW + 2} cy={y + 58} r={5.5}
+          <circle cx={x + BW + 2} cy={y + 44} r={5.5}
             fill="#221400" stroke="#ff6600" strokeWidth={1.5} />
-          <text x={x + BW - 8} y={y + 54} textAnchor="end" fill="#ff6600" fontSize={7.5}>root</text>
-          <text x={x + BW - 8} y={y + 64} textAnchor="end" fill="#885533" fontSize={7}>{track.rootPort}</text>
+          <text x={x + BW + 10} y={y + 36} fill="#ff6600" fontSize={7.5}>root</text>
+          <text x={x + BW + 10} y={y + 46} fill="#885533" fontSize={7}>{track.rootPort}</text>
         </g>
       )}
     </g>
@@ -280,15 +252,15 @@ export function PreInitFig() {
         ))}
       </div>
 
-      <svg viewBox="0 0 532 860" className="w-full">
+      <svg viewBox="0 0 532 576" className="w-full">
 
         {/* ── Infrastructure band (y = 0..88) ── */}
 
         {has(flags, 'ctl') && (
           <g>
-            <rect x={16} y={252} width={116} height={22} rx={4}
+            <rect x={16} y={196} width={116} height={22} rx={4}
               fill="#12121a" stroke="#8888aa" strokeWidth={1} />
-            <text x={74} y={267} textAnchor="middle" fill="#8888aa" fontSize={9}>
+            <text x={74} y={211} textAnchor="middle" fill="#8888aa" fontSize={9}>
               {track.ctlLabel}
             </text>
           </g>
@@ -340,7 +312,7 @@ export function PreInitFig() {
           )
         })}
         {has(flags, 'ssh') && (
-          <text x={244} y={170} fill="#8888aa" fontSize={8}>ssh</text>
+          <text x={244} y={150} fill="#8888aa" fontSize={8}>ssh</text>
         )}
 
         {/* daemon links: star — root's daemon to each arc box's daemon */}
@@ -365,8 +337,8 @@ export function PreInitFig() {
 
         {/* reach-out: every arc box dials the root port — a clean star */}
         {has(flags, 'reach') && [1, 2, 3].map((bi) => {
-          const sx = BPOS[bi].x, sy = BPOS[bi].y + 58
-          const tx = BPOS[0].x + BW + 2, ty = BPOS[0].y + 58
+          const sx = BPOS[bi].x, sy = BPOS[bi].y + 44
+          const tx = BPOS[0].x + BW + 2, ty = BPOS[0].y + 44
           return (
             <path key={bi}
               d={`M ${sx} ${sy} Q ${(sx + tx) / 2 - 8} ${(sy + ty) / 2} ${tx} ${ty}`}
@@ -382,7 +354,7 @@ export function PreInitFig() {
 
         {/* management net label in the vertical center gap */}
         {(has(flags, 'ssh') || has(flags, 'tree') || has(flags, 'batch0')) && (
-          <text x={252} y={476} textAnchor="middle" fill="#004444" fontSize={7}>mgmt net</text>
+          <text x={252} y={344} textAnchor="middle" fill="#004444" fontSize={7}>mgmt net</text>
         )}
 
         {/* server boxes — rendered last so they sit on top of connection lines */}
