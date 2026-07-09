@@ -222,7 +222,9 @@ clusters the frontend. Bootstrap ring afterward: NCCL's ladder, independent of
 
 After P1, all three converge: `bootstrapInit` forms the same TCP ring by the same
 interface ladder, AllGather1 discovers the same node structure, and the search proceeds
-identically. **The launcher decides only how the first 128 bytes travel — but nearly
+identically. (Who guarantees rank order handed over here actually tracks the physical
+fabric — schedulers, frameworks, discovery services — is its own layer cake:
+[PLACEMENT.md](PLACEMENT.md).) **The launcher decides only how the first 128 bytes travel — but nearly
 every "mysterious init hang" lives in exactly that leg.**
 
 ---
