@@ -202,3 +202,41 @@ missing verification layer from the scheduler side; nothing yet verifies it from
 protocol side — no layer measures, at job start, whether the rank order it received
 actually matches the fabric it's about to flood. The diagnostic NCCL could print in one
 line ("rank order crosses SU boundaries N times; minimum M") remains unwritten.
+
+---
+
+## The three addressing planes (why this is network-engineering material)
+
+A GPU cluster encodes its topology three times, in three alphabets:
+
+| Plane | Encoding | Read via | Consistency mechanism |
+|---|---|---|---|
+| **Cabling** | rail wiring, NIC-index convention, NVLink domains | LLDP / UFM / NetQ | physical reality (authoritative by definition) |
+| **L2/L3** | RA IP plan, IB subnet prefixes/LIDs, GID structure | routing tables, prefix plan | ARP/ND, SM sweeps, routing convergence |
+| **Labels/naming** | `network.topology.nvidia.com/*`, `topology.kubernetes.io/*`, pod ordinals, hostname sort keys | `kubectl get node --show-labels`, `topology.conf` | **none** — Topograph re-runs on a schedule |
+
+The uncomfortable asymmetry: the plane network engineers are trained to read (L3) is the
+one the job stack mostly ignores, and the plane with **no consistency protocol** (labels)
+is the one that's authoritative for scheduling. The label plane is functionally the LSDB
+of the ML stack — etcd as the OSPF database — except there is no flooding, no aging, no
+%ADJCHANGE. A recabled node or a lagging discovery run leaves labels describing a fabric
+that no longer exists, and nothing withdraws them. **Label drift is the new stale route.**
+(InfiniBand is the partial exception: the subnet manager is a live topology authority
+with sweeps and reroutes — but its knowledge reaches the job layer only through the same
+label export.)
+
+The operational consequence — five topology views, one hostname join key, three owning
+teams:
+
+| View | "Show command" | Owner |
+|---|---|---|
+| cabling | LLDP / UFM / NetQ | fabric team |
+| L3 | routing tables, prefix plan | fabric team |
+| labels | `kubectl get node --show-labels` / `topology.conf` | platform team |
+| rank order | scheduler allocation / pod ordinals | platform team |
+| NCCL's view | `NCCL_DEBUG=INFO`, `NCCL_TOPO_DUMP_FILE` | ML team |
+
+Any adjacent pair can silently disagree; every disagreement produces the same symptom
+(slow steps, zero errors); and the pairs are owned by different teams. Five topology
+databases, zero synchronization protocols between them — the thesis, restated as an
+org chart.
