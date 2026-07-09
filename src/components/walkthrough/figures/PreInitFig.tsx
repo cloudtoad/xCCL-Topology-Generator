@@ -19,7 +19,12 @@ type Flag =
 interface TrackStep { caption: string; adds: Flag[] }
 interface Track {
   key: string; label: string; daemonName: string; ctlLabel: string
-  identityLine: string; steps: TrackStep[]
+  identityLine: string
+  /** Where the root's address lives in this track (shown once a box holds the id). */
+  addrLine?: string
+  /** Root listener port label — well-known (srun) vs ephemeral (mpirun/torchrun). */
+  rootPort: string
+  steps: TrackStep[]
 }
 
 const S0 = 'Four boxes, an OS each. GPUs and their dedicated backend NICs: dark silicon.'
@@ -28,6 +33,7 @@ const TRACKS: Track[] = [
   {
     key: 'slurm', label: 'srun · shared FS', daemonName: 'slurmd',
     ctlLabel: 'slurmctld', identityLine: 'SLURM_PROCID · LOCALID',
+    rootPort: ':29500 well-known',
     steps: [
       { caption: S0, adds: [] },
       { caption: 'The management plane pre-exists the job: slurmd on every box, MUNGE-keyed, always up.', adds: ['daemons', 'ctl'] },
@@ -42,6 +48,8 @@ const TRACKS: Track[] = [
   {
     key: 'mpirun', label: 'mpirun · ssh', daemonName: 'prted',
     ctlLabel: 'mpirun @ box 0', identityLine: 'MPI_COMM_WORLD rank',
+    addrLine: 'id.addr = box0:41387 · ephemeral',
+    rootPort: ':41387 ephemeral',
     steps: [
       { caption: S0, adds: [] },
       { caption: 'Code placement: one shared filesystem mounted everywhere.', adds: ['fs'] },
@@ -56,6 +64,8 @@ const TRACKS: Track[] = [
   {
     key: 'torchrun', label: 'torchrun · containers', daemonName: 'agent',
     ctlLabel: 'IaC / operator', identityLine: 'RANK · LOCAL_RANK · MASTER_ADDR',
+    addrLine: 'id.addr = box0:36245 · ephemeral',
+    rootPort: ':36245 ephemeral',
     steps: [
       { caption: S0, adds: [] },
       { caption: 'Terraform/Ansible/the operator provisions: every box pulls the same image from the registry.', adds: ['ctl', 'registry'] },
@@ -170,10 +180,16 @@ function ServerBox({ bi, flags, track }: { bi: number; flags: Set<Flag>; track: 
         </text>
       )}
 
-      {/* NCCL_COMM_ID (slurm path) */}
+      {/* NCCL_COMM_ID (slurm path): the address lives in the ENV */}
       {has(flags, 'commid') && (
         <text x={x + 9} y={y + PROC_Y + 68} fill="#00ffff" fontSize={7}>
           NCCL_COMM_ID=box0:29500
+        </text>
+      )}
+      {/* mpirun/torchrun: the address lives INSIDE the 128-byte blob */}
+      {track.addrLine && ((root && has(flags, 'id0')) || has(flags, 'idAll')) && (
+        <text x={x + 9} y={y + PROC_Y + 68} fill="#8899aa" fontSize={7}>
+          {track.addrLine}
         </text>
       )}
 
@@ -224,7 +240,7 @@ function ServerBox({ bi, flags, track }: { bi: number; flags: Set<Flag>; track: 
           <circle cx={x + BW + 2} cy={y + 58} r={5.5}
             fill="#221400" stroke="#ff6600" strokeWidth={1.5} />
           <text x={x + BW + 11} y={y + 54} fill="#ff6600" fontSize={7.5}>root</text>
-          <text x={x + BW + 11} y={y + 64} fill="#885533" fontSize={7}>:29500</text>
+          <text x={x + BW + 11} y={y + 64} fill="#885533" fontSize={7}>{track.rootPort}</text>
         </g>
       )}
     </g>
