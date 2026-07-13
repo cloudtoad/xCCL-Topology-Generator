@@ -4,6 +4,7 @@ import type { TuningResult } from '../engine/tuning'
 import type { ClusterTopology } from '../engine/cluster'
 import type { RingBuildTrace } from '../engine/ring-build-trace'
 import type { QPPlan } from '../engine/qp'
+import type { LineageGraph } from '../engine/lineage'
 
 interface TopologyState {
   // Hardware configuration
@@ -21,6 +22,7 @@ interface TopologyState {
   tuning: TuningResult | null
   ringBuildTrace: RingBuildTrace | null
   buildSystem: TopoSystem | null // searched system when ≠ display system (2-node local view + NETs)
+  lineage: LineageGraph | null
   clusterTopo: ClusterTopology | null
   qpPlan: QPPlan | null
 
@@ -38,6 +40,7 @@ interface TopologyState {
   setTuning: (tuning: TuningResult | null) => void
   setRingBuildTrace: (trace: RingBuildTrace | null) => void
   setBuildSystem: (buildSystem: TopoSystem | null) => void
+  setLineage: (lineage: LineageGraph | null) => void
   setCluster: (clusterTopo: ClusterTopology | null, qpPlan: QPPlan | null) => void
   setGenerating: (generating: boolean) => void
   setGenerationError: (error: string | null) => void
@@ -63,6 +66,7 @@ export const useTopologyStore = create<TopologyState>((set) => ({
   tuning: null,
   ringBuildTrace: null,
   buildSystem: null,
+  lineage: null,
   clusterTopo: null,
   qpPlan: null,
   isGenerating: false,
@@ -78,6 +82,7 @@ export const useTopologyStore = create<TopologyState>((set) => ({
   setTuning: (tuning) => set({ tuning }),
   setRingBuildTrace: (ringBuildTrace) => set({ ringBuildTrace }),
   setBuildSystem: (buildSystem) => set({ buildSystem }),
+  setLineage: (lineage) => set({ lineage }),
   setCluster: (clusterTopo, qpPlan) => set({ clusterTopo, qpPlan }),
   setGenerating: (generating) => set({ isGenerating: generating }),
   setGenerationError: (error) => set({ generationError: error }),
@@ -93,6 +98,7 @@ export const useTopologyStore = create<TopologyState>((set) => ({
       tuning: null,
       ringBuildTrace: null,
       buildSystem: null,
+      lineage: null,
       clusterTopo: null,
       qpPlan: null,
       isGenerating: false,

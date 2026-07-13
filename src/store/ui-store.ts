@@ -4,7 +4,7 @@ export type XCCLMode = 'nccl' | 'rccl'
 export type ViewMode = 'physical' | 'build' | 'ring' | 'tree' | 'nvls' | 'sim' | 'walkthrough'
 export type ScaleView = 'cluster' | 'node'
 export type SidePanel = 'builder' | 'none'
-export type InfoPanel = 'info' | 'decisions' | 'ai' | 'none'
+export type InfoPanel = 'info' | 'decisions' | 'lineage' | 'ai' | 'none'
 
 interface UIState {
   mode: XCCLMode

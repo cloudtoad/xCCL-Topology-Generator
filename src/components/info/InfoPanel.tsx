@@ -2,6 +2,7 @@ import { useUIStore } from '../../store/ui-store'
 import { useTopologyStore } from '../../store/topology-store'
 import { DecisionLog } from './DecisionLog'
 import { AIExplainer } from './AIExplainer'
+import { LineagePanel } from './LineagePanel'
 import { PathInspector } from './PathInspector'
 import { NodeType, Algorithm, Protocol } from '../../engine/types'
 
@@ -25,7 +26,7 @@ export function InfoPanel() {
     <div className="flex flex-col h-full bg-surface-800">
       {/* Tab bar */}
       <div className="flex border-b border-surface-600">
-        {(['info', 'decisions', 'ai'] as const).map((tab) => (
+        {(['info', 'decisions', 'lineage', 'ai'] as const).map((tab) => (
           <button
             key={tab}
             onClick={() => setInfoPanel(tab)}
@@ -157,6 +158,8 @@ export function InfoPanel() {
         )}
 
         {infoPanel === 'decisions' && <DecisionLog />}
+
+        {infoPanel === 'lineage' && <LineagePanel />}
 
         {infoPanel === 'ai' && <AIExplainer />}
       </div>

@@ -18,6 +18,7 @@ import { dgxH100Config } from './engine/templates/dgx-h100'
 import { createDefaultEnvConfig } from './engine/env'
 import { useTopologyStore } from './store/topology-store'
 import { useDecisionStore } from './store/decision-store'
+import { buildLineage } from './engine/lineage'
 import type { ViewMode } from './store/ui-store'
 
 export type ScenarioKind = 'two-node' | 'four-node'
@@ -68,6 +69,11 @@ export function loadScenario(kind: ScenarioKind): void {
   t.setCluster(result.clusterTopo, result.qpPlan)
   t.setRingBuildTrace(result.ringBuildTrace)
   t.setBuildSystem(result.buildSystem)
+  t.setLineage(buildLineage(dgxH100Config, createDefaultEnvConfig(), {
+    serverCount: kind === 'two-node' ? 2 : 4,
+    railCount: 8,
+    networkType: 'rail-optimized',
+  }, result))
 
   const d = useDecisionStore.getState()
   d.clear()
