@@ -272,49 +272,63 @@ export function BuildView() {
           grows the road network. */}
       {state.currentChannel === null && state.rings.size === 0 && state.lastAttempt && (() => {
         const a = state.lastAttempt
-        const arcs: { key: string; from: Vec3; to: Vec3; color: string; bw: number }[] = []
-        for (let i = 0; i < gpus.length; i++) {
-          for (let j = i + 1; j < gpus.length; j++) {
-            const path = system.paths.get(`${gpus[i].id}->${gpus[j].id}`)
-            if (!path || path.type > a.typeIntra || path.bandwidth < a.speed) continue
-            const from = posOf.get(gpus[i].id)
-            const to = posOf.get(gpus[j].id)
-            if (from && to) arcs.push({
-              key: `web-${i}-${j}`, from, to,
-              color: PATH_COLORS[path.type] ?? '#8888aa', bw: path.bandwidth,
-            })
-          }
-        }
-        if (system.inter) {
-          for (const gpu of gpus) {
-            for (const net of nets) {
-              const path = system.paths.get(`${gpu.id}->${net.id}`)
-              if (!path || path.type > a.typeInter || path.bandwidth < a.speed) continue
-              const from = posOf.get(gpu.id)
-              const to = netPosOf.get(net.id)
-              if (from && to) arcs.push({
-                key: `web-${gpu.id}-${net.id}`, from, to,
+        // Position of any renderable waypoint (GPU slot, NVS, NET chip).
+        const wpPos = (id: string): Vec3 | undefined =>
+          posOf.get(id) ??
+          netPosOf.get(id) ??
+          (layout.nodePositions.get(id)
+            ? [layout.nodePositions.get(id)![0], 0.02, layout.nodePositions.get(id)![2]]
+            : undefined)
+        // One pair = ONE path (SPFA chose it at the paths stage). Route each
+        // eligible pair's path through its real waypoints, then DEDUPE into
+        // physical segments — 28 NVLink pairs collapse onto 8 GPU↔NVS spokes,
+        // which is the physical truth of an NVSwitch fabric.
+        const segs = new Map<string, { from: Vec3; to: Vec3; color: string; bw: number }>()
+        let pairCount = 0
+        const addPath = (fromId: string, toId: string, maxType: number) => {
+          const path = system.paths.get(`${fromId}->${toId}`)
+          if (!path || path.type > maxType || path.bandwidth < a.speed) return
+          pairCount++
+          const waypoints = [fromId, ...path.hops.map((h) => h.nodeId)]
+            .filter((id, i, arr) => arr.indexOf(id) === i)
+            .map((id) => ({ id, pos: wpPos(id) }))
+            .filter((w): w is { id: string; pos: Vec3 } => !!w.pos)
+          for (let k = 0; k < waypoints.length - 1; k++) {
+            const [x, y] = [waypoints[k], waypoints[k + 1]]
+            const key = [x.id, y.id].sort().join('>')
+            if (!segs.has(key)) {
+              segs.set(key, {
+                from: x.pos, to: y.pos,
                 color: PATH_COLORS[path.type] ?? '#8888aa', bw: path.bandwidth,
               })
             }
           }
         }
+        for (let i = 0; i < gpus.length; i++) {
+          for (let j = i + 1; j < gpus.length; j++) addPath(gpus[i].id, gpus[j].id, a.typeIntra)
+        }
+        if (system.inter) {
+          for (const gpu of gpus) for (const net of nets) addPath(gpu.id, net.id, a.typeInter)
+        }
         return (
           <group>
-            {arcs.map((w) => (
+            {[...segs.entries()].map(([key, w]) => (
               <Line
-                key={w.key}
-                points={arc(w.from, w.to, 0.32 + (w.bw / 400))}
+                key={key}
+                points={arc(w.from, w.to, 0.22)}
                 color={w.color}
                 lineWidth={linkInkWidth(w.bw) * 0.6}
                 transparent
-                opacity={0.3}
+                opacity={0.32}
                 toneMapped={false}
               />
             ))}
-            <Billboard position={[0, 3.6, rowZ]}>
+            <Billboard position={[1.2, 3.9, rowZ]}>
               <Text fontSize={0.24} color="#8899aa" anchorX="center">
-                {`${arcs.length} paths eligible under attempt ${a.n} (speed ≥ ${a.speed}, typeIntra ≤ ${PATH_TYPE_STR[a.typeIntra] ?? a.typeIntra}${system.inter ? `, typeInter ≤ ${PATH_TYPE_STR[a.typeInter] ?? a.typeInter}` : ''})`}
+                {`attempt ${a.n}: ${pairCount} eligible pairs over ${segs.size} physical segments (speed ≥ ${a.speed}, typeIntra ≤ ${PATH_TYPE_STR[a.typeIntra] ?? a.typeIntra}${system.inter ? `, typeInter ≤ ${PATH_TYPE_STR[a.typeInter] ?? a.typeInter}` : ''})`}
+              </Text>
+              <Text position={[0, -0.34, 0]} fontSize={0.17} color="#556677" anchorX="center">
+                one pair = one path, fixed by SPFA at the paths stage — the search picks node ORDERS over these roads, never alternate routes between a pair
               </Text>
             </Billboard>
           </group>
@@ -330,6 +344,54 @@ export function BuildView() {
           active={n.id === currentNetIn || n.id === currentNetOut}
         />
       ))}
+
+      {/* Candidate comparison: when the search is choosing the next hop,
+          draw each candidate's (single, SPFA-fixed) path from the current
+          GPU — green = winner, gray = losers — and say WHY it won. */}
+      {state.lastConsider && (() => {
+        const c = state.lastConsider
+        const from = posOf.get(c.from)
+        if (!from) return null
+        const sorted = [...c.candidates].sort((x, y) => x.rank - y.rank)
+        let why = 'only feasible candidate'
+        if (sorted.length > 1) {
+          const [c0, c1] = sorted
+          why =
+            c0.intraBw !== c1.intraBw
+              ? `higher path bw (${c0.intraBw.toFixed(0)} vs ${c1.intraBw.toFixed(0)} GB/s)`
+              : c0.intraNhops !== c1.intraNhops
+                ? `fewer hops (${c0.intraNhops} vs ${c1.intraNhops})`
+                : 'all tied on bw and hops → lowest index wins (search.cc:211)'
+        }
+        return (
+          <group>
+            {sorted.map((cand) => {
+              const to = posOf.get(cand.id)
+              if (!to) return null
+              const isChosen = cand.id === c.chosen
+              return (
+                <Line
+                  key={`cand-${cand.id}`}
+                  points={arc(from, to, 0.45)}
+                  color={isChosen ? '#00ff88' : '#667788'}
+                  lineWidth={isChosen ? 2.2 : 1}
+                  transparent
+                  opacity={isChosen ? 0.9 : 0.35}
+                  dashed={!isChosen}
+                  dashSize={0.12}
+                  gapSize={0.08}
+                  toneMapped={false}
+                />
+              )
+            })}
+            <Billboard position={[0, 3.3, rowZ]}>
+              <Text fontSize={0.2} color="#00ff88" anchorX="center">
+                {`next hop from ${c.from.replace('gpu-', 'GPU ')}: ${sorted.length} candidate${sorted.length === 1 ? '' : 's'} — ${c.chosen.replace('gpu-', 'GPU ')} wins: ${why}`}
+              </Text>
+            </Billboard>
+          </group>
+        )
+      })()}
 
       {/* Rings: in-progress bold, completed dimmed into context */}
       {[...state.rings.entries()].map(([channel, order]) => {
