@@ -272,13 +272,20 @@ export function BuildView() {
           grows the road network. */}
       {state.currentChannel === null && state.rings.size === 0 && state.lastAttempt && (() => {
         const a = state.lastAttempt
-        // Position of any renderable waypoint (GPU slot, NVS, NET chip).
-        const wpPos = (id: string): Vec3 | undefined =>
-          posOf.get(id) ??
-          netPosOf.get(id) ??
-          (layout.nodePositions.get(id)
-            ? [layout.nodePositions.get(id)![0], 0.02, layout.nodePositions.get(id)![2]]
-            : undefined)
+        // Waypoints may ONLY be nodes this view actually renders: GPU slots,
+        // NET chips, and the NVS. PCI switches / NICs exist in the path hops
+        // but have no tile here — routing through their physical-layout
+        // coordinates would send lines to phantom positions off the stage.
+        const nvsIds = new Set(nvs.map((x) => x.id))
+        const wpPos = (id: string): Vec3 | undefined => {
+          const slot = posOf.get(id) ?? netPosOf.get(id)
+          if (slot) return slot
+          if (nvsIds.has(id)) {
+            const p = layout.nodePositions.get(id)
+            if (p) return [p[0], 0.02, p[2]]
+          }
+          return undefined
+        }
         // One pair = ONE path (SPFA chose it at the paths stage). Route each
         // eligible pair's path through its real waypoints, then DEDUPE into
         // physical segments — 28 NVLink pairs collapse onto 8 GPU↔NVS spokes,
