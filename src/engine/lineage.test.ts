@@ -51,8 +51,35 @@ describe('lineage graph — the datapoint map', () => {
   test('2-node: channel 0 entry NET dangles from NIC count via rotation', () => {
     const netIn = twoLineage.nodes.get('ring.ch0.netIn')
     expect(netIn).toBeDefined()
-    expect(netIn!.upstream).toEqual(['cfg.nic'])
+    expect(netIn!.upstream).toContain('cfg.nic')
     expect(netIn!.sourceRef).toContain('735')
+  })
+
+  test('L2 ladder: fired rungs chain into search.accepted', () => {
+    // 2-node fired at least sameChannels→0 (the validated experiment)
+    const rung1 = twoLineage.nodes.get('search.rung1')
+    expect(rung1).toBeDefined()
+    expect(rung1!.value).toContain('sameChannels')
+    const acc = twoLineage.nodes.get('search.accepted')!
+    const anc = ancestors(twoLineage, 'search.accepted').map((n) => n.id)
+    expect(anc).toContain('search.rung1')
+    expect(acc.value).toContain('8ch @ 20')
+  })
+
+  test('per-channel nodes exist for EVERY channel', () => {
+    for (let i = 0; i < two.ringGraph.nChannels; i++) {
+      expect(twoLineage.nodes.get(`ring.ch${i}.order`), `ch${i}`).toBeDefined()
+      expect(twoLineage.nodes.get(`ring.ch${i}.netIn`), `ch${i} netIn`).toBeDefined()
+    }
+    for (let i = 0; i < single.ringGraph.nChannels; i++) {
+      expect(singleLineage.nodes.get(`ring.ch${i}.order`), `ch${i}`).toBeDefined()
+    }
+  })
+
+  test('Phase-2 climb node: present where headroom existed, absent where not', () => {
+    expect(singleLineage.nodes.get('search.climb')).toBeDefined()
+    expect(singleLineage.nodes.get('search.climb')!.value).toContain('0 kept')
+    expect(twoLineage.nodes.get('search.climb')).toBeUndefined() // 8@20 = at ceiling
   })
 
   test('values are ground truth, not recomputed', () => {

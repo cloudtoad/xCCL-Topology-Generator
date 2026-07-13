@@ -220,31 +220,81 @@ export function buildLineage(
   const ring = result.ringGraph
   const haveRing = ring.nChannels > 0
   if (haveRing) {
+    const events = result.ringBuildTrace?.events ?? []
+    const accIdx = events.findIndex((e) => e.kind === 'accepted')
+    const acc = accIdx >= 0
+      ? (events[accIdx] as Extract<(typeof events)[number], { kind: 'accepted' }>)
+      : null
+
+    // The ladder: one node per FIRED rung, chained — the relaxation cascade
+    // as ancestry. Each rung exists because the previous attempt failed.
+    const rungs = (accIdx >= 0 ? events.slice(0, accIdx) : events).filter(
+      (e) => e.kind === 'relax',
+    ) as Extract<(typeof events)[number], { kind: 'relax' }>[]
+    let prevRung: string | null = null
+    rungs.forEach((r, i) => {
+      const id = `search.rung${i + 1}`
+      add({
+        id, label: `Rung ${i + 1} fired`, kind: 'derived', phase: 'search',
+        value: r.action,
+        producedBy: `previous attempt failed → ${r.reason}`,
+        sourceRef: r.sourceRef,
+        upstream: prevRung ? [prevRung] : ['paths.matrix'],
+      })
+      prevRung = id
+    })
+
+    add({
+      id: 'search.accepted', label: 'Accepted solution', kind: 'derived', phase: 'search',
+      value: acc
+        ? `${acc.nChannels}ch @ ${acc.speed} GB/s (sameChannels=${acc.sameChannels})`
+        : `${ring.nChannels}ch @ ${ring.speedIntra} GB/s`,
+      producedBy: rungs.length
+        ? `search succeeded after ${rungs.length} relaxation${rungs.length === 1 ? '' : 's'} (keep-if-better)`
+        : 'search succeeded with strictest constraints — zero rungs fired',
+      sourceRef: 'search.cc:1074+ · 445-461 (compareGraphs)',
+      upstream: [...(prevRung ? [prevRung] : ['paths.matrix']), 'env.channelBounds'],
+    })
+
+    // Phase-2 climb (pass 2): present when headroom existed above the solution.
+    const improves = events.filter((e) => e.kind === 'improve') as
+      Extract<(typeof events)[number], { kind: 'improve' }>[]
+    if (improves.length > 0) {
+      const kept = improves.filter((i) => i.kept).length
+      add({
+        id: 'search.climb', label: 'Phase-2 climb', kind: 'derived', phase: 'search',
+        value: `${improves.length} rung${improves.length === 1 ? '' : 's'} tried, ${kept} kept`,
+        producedBy: 'pass 2: climb the speed ladder from the solution, channel count locked',
+        sourceRef: 'search.cc:1255-1283', upstream: ['search.accepted', 'topo.maxBw'],
+      })
+    }
+
     add({
       id: 'search.speed', label: 'Per-channel speed', kind: 'derived', phase: 'search',
       value: `${ring.speedIntra.toFixed(1)} GB/s`,
-      producedBy: 'speed ladder descent bounded by ceilings (two-pass: descend, then climb)',
-      sourceRef: 'search.cc:1074+ · 1246 · 1267-1283', upstream: ['topo.maxBw', 'topo.totalBw'],
+      producedBy: 'the accepted attempt\'s ladder speed (halved if DupChannels fires)',
+      sourceRef: 'search.cc:1074+ · 1246 · 1267-1283',
+      upstream: ['search.accepted', 'topo.maxBw', 'topo.totalBw'],
     })
     add({
       id: 'search.typeIntra', label: 'typeIntra (accepted)', kind: 'derived', phase: 'search',
       value: PATH_TYPE_STR[ring.typeIntra] ?? String(ring.typeIntra),
-      producedBy: 'relaxation ladder rung 3 (typeIntra++ until feasible)',
-      sourceRef: 'search.cc:1224', upstream: ['paths.matrix'],
+      producedBy: 'strictest intra path class the accepted attempt allowed',
+      sourceRef: 'search.cc:1224', upstream: ['search.accepted', 'paths.matrix'],
     })
     if (inter) {
       add({
         id: 'search.typeInter', label: 'typeInter (accepted)', kind: 'derived', phase: 'search',
         value: PATH_TYPE_STR[ring.typeInter] ?? String(ring.typeInter),
-        producedBy: 'relaxation ladder rung 4 (typeInter++ until feasible)',
-        sourceRef: 'search.cc:1231', upstream: ['paths.matrix'],
+        producedBy: 'strictest inter path class the accepted attempt allowed',
+        sourceRef: 'search.cc:1231', upstream: ['search.accepted', 'paths.matrix'],
       })
-      const crossNic = ring.channels.some((c) => c.netIn && c.netOut && c.netIn !== c.netOut)
       add({
         id: 'search.crossNic', label: 'crossNic', kind: 'derived', phase: 'search',
-        value: crossNic ? '1 (exit ≠ entry NIC)' : '0 (exit = entry NIC)',
-        producedBy: 'relaxation ladder rung 5 (only if rungs 1-4 failed)',
-        sourceRef: 'search.cc:1239', upstream: ['paths.matrix', 'cfg.nic'],
+        value: acc ? (acc.crossNic ? '1 (exit ≠ entry NIC)' : '0 (exit = entry NIC)')
+                   : '0 (exit = entry NIC)',
+        producedBy: 'relaxation rung 5 (fires only if rungs 1-4 failed)',
+        sourceRef: 'search.cc:1239', upstream: ['search.accepted', 'cfg.nic'],
       })
     }
     const dupEvent = result.ringBuildTrace?.events.find((e) => e.kind === 'dup') as
@@ -254,7 +304,7 @@ export function buildLineage(
         id: 'search.preDupChannels', label: 'Channels found (pre-dup)', kind: 'derived', phase: 'search',
         value: String(dupEvent.fromChannels),
         producedBy: 'ring search: channels until bandwidth exhausted',
-        sourceRef: 'search.cc:1074+', upstream: ['search.speed', 'paths.matrix'],
+        sourceRef: 'search.cc:1074+', upstream: ['search.accepted'],
       })
     }
     add({
@@ -272,27 +322,29 @@ export function buildLineage(
         'env.channelBounds',
       ],
     })
-    const ch0 = ring.channels[0]
-    if (inter && ch0?.netIn) {
+
+    // Per-channel nodes — every channel, not just ch0. The weird orders ARE
+    // the product; each one is a datapoint with its own ancestry.
+    ring.channels.forEach((ch, i) => {
+      if (inter && ch.netIn) {
+        add({
+          id: `ring.ch${i}.netIn`, label: `Channel ${i} entry NET`, kind: 'derived', phase: 'search',
+          value: ch.netIn,
+          producedBy: `NIC rotation: nets[(${i} + i) % netCount]`,
+          sourceRef: 'search.cc:735', upstream: ['cfg.nic', 'ring.nChannels'],
+        })
+      }
       add({
-        id: 'ring.ch0.netIn', label: 'Channel 0 entry NET', kind: 'derived', phase: 'search',
-        value: ch0.netIn,
-        producedBy: 'NIC rotation: nets[(channel + i) % netCount]',
-        sourceRef: 'search.cc:735', upstream: ['cfg.nic'],
-      })
-    }
-    if (ch0) {
-      add({
-        id: 'ring.ch0.order', label: 'Channel 0 ring order', kind: 'derived', phase: 'search',
-        value: ch0.ringOrder.map((g) => g.replace('gpu-', '')).join('→'),
+        id: `ring.ch${i}.order`, label: `Channel ${i} ring order`, kind: 'derived', phase: 'search',
+        value: ch.ringOrder.map((g) => g.replace('gpu-', '')).join('→'),
         producedBy: 'per-hop tiebreaker cascade + backtracking recursion',
         sourceRef: 'search.cc:202-211 (cmpScore) · 622+ (recursion)',
         upstream: [
           'search.typeIntra', 'paths.matrix',
-          ...(inter && ch0.netIn ? ['ring.ch0.netIn'] : []),
+          ...(inter && ch.netIn ? [`ring.ch${i}.netIn`] : []),
         ],
       })
-    }
+    })
   }
 
   // ── graphs ─────────────────────────────────────────────────────────────────
