@@ -90,7 +90,7 @@ export function toMermaid(graph: LineageGraph, focusId?: string): string {
   return lines.join('\n')
 }
 
-function mid(id: string): string {
+export function mid(id: string): string {
   return id.replace(/[^a-zA-Z0-9]/g, '_')
 }
 

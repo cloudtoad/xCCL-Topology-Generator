@@ -8,6 +8,8 @@
 // =============================================================================
 import { useState } from 'react'
 import { useTopologyStore } from '../../store/topology-store'
+import { useUIStore } from '../../store/ui-store'
+import { useAtlasStore } from '../../store/atlas-store'
 import { ancestors, dependents } from '../../engine/lineage'
 import type { LineageGraph, LineageNode, LineagePhase } from '../../engine/lineage'
 
@@ -95,6 +97,8 @@ function UpstreamTree({ entries, onSelect }: {
 
 export function LineagePanel() {
   const lineage = useTopologyStore((s) => s.lineage)
+  const setViewMode = useUIStore((s) => s.setViewMode)
+  const focusLineage = useAtlasStore((s) => s.focusLineage)
   const [selected, setSelected] = useState<string | null>(null)
 
   if (!lineage) {
@@ -125,6 +129,13 @@ export function LineagePanel() {
             {sel.producedBy}
             <span className="text-gray-600 font-mono"> · {sel.sourceRef}</span>
           </div>
+          <button
+            title="lineage-view-in-atlas"
+            onClick={() => { focusLineage(sel.id); setViewMode('atlas') }}
+            className="mt-1.5 px-2 py-0.5 text-[9px] border border-neon-cyan/40 rounded text-neon-cyan hover:bg-neon-cyan/10"
+          >
+            view in Atlas →
+          </button>
         </div>
 
         <div className="text-[10px] text-gray-500 uppercase tracking-wider">

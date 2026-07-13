@@ -108,6 +108,11 @@ labeled flows); source in [diagrams/L0-SSA.mmd](diagrams/L0-SSA.mmd).*
 
 ## Station 60 — COMPUTE: the two-pass ladder machine (the heart)
 
+*Rendered companions: [diagrams/L2-CFG.png](diagrams/L2-CFG.png) (control flow) and
+[diagrams/L2-DFD.png](diagrams/L2-DFD.png) (level-2 data flow). Interactive versions
+with cross-links to the Build view and lineage live in the app's **Atlas** view;
+sources in `src/atlas/graphs/`.*
+
 ```
 PROC COMPUTE(pattern):                                             search.cc:1074+
   tmp    ← STRICTEST(pattern)      # crossNic=0 · sameChannels=1 · best path types

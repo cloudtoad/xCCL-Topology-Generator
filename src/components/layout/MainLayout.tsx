@@ -7,6 +7,7 @@ import { Scene3D } from '../viewer/Scene3D'
 import { SimControls } from '../controls/SimControls'
 import { BuildControls } from '../controls/BuildControls'
 import { WalkthroughView } from '../walkthrough/WalkthroughView'
+import { AtlasView } from '../atlas/AtlasView'
 
 export function MainLayout() {
   const infoPanel = useUIStore((s) => s.infoPanel)
@@ -27,6 +28,8 @@ export function MainLayout() {
         <div className="flex-1 relative">
           {viewMode === 'walkthrough' ? (
             <WalkthroughView />
+          ) : viewMode === 'atlas' ? (
+            <AtlasView />
           ) : (
             <>
               <Scene3D />

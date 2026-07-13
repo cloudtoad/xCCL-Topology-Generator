@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 
 export type XCCLMode = 'nccl' | 'rccl'
-export type ViewMode = 'physical' | 'build' | 'ring' | 'tree' | 'nvls' | 'sim' | 'walkthrough'
+export type ViewMode = 'physical' | 'build' | 'ring' | 'tree' | 'nvls' | 'sim' | 'walkthrough' | 'atlas'
 export type ScaleView = 'cluster' | 'node'
 export type SidePanel = 'builder' | 'none'
 export type InfoPanel = 'info' | 'decisions' | 'lineage' | 'ai' | 'none'

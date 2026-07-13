@@ -32,6 +32,7 @@ export function scenarioFor(viewMode: ViewMode): ScenarioKind | null {
     case 'ring':
     case 'tree':
     case 'nvls':
+    case 'atlas': // the atlas reads the trace-rich scenario
       return 'two-node'
     case 'physical':
     case 'sim':
