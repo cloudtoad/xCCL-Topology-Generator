@@ -52,13 +52,18 @@ describe('2-node DGX H100, rail-paired NETs', () => {
     expect(ring.speedIntra).toBe(20)
   })
 
-  test('each channel enters AND exits within typeInter at its own rail', () => {
+  test('each channel enters PIX at its rail and exits via PXN pass-through', () => {
+    // Dedicated switch per GPU+NIC pair (modern layout, ledger #19): only ONE
+    // GPU is PIX-local to each NIC, so the ring's last GPU exits through the
+    // rail owner over NVLink — PXN, exactly the designed rail-optimized
+    // behavior (NCCL 2.12 blog "PXN"; paths.cc:725-749). crossNic stays 0
+    // BECAUSE PXN lets the ring come home to its entry NIC.
     for (const ch of ring.channels) {
-      expect(ch.netIn).toBe(ch.netOut) // crossNic=0 held
+      expect(ch.netIn).toBe(ch.netOut) // crossNic=0 held — PXN makes it possible
       const entry = system.paths.get(`${ch.netIn}->${ch.ringOrder[0]}`)
       const exit = system.paths.get(`${ch.ringOrder[ch.ringOrder.length - 1]}->${ch.netOut}`)
       expect(entry?.type).toBe(PathType.PIX)
-      expect(exit?.type).toBe(PathType.PIX)
+      expect(exit?.type).toBe(PathType.PXN)
     }
   })
 

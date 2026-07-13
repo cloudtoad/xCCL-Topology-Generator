@@ -17,10 +17,9 @@ describe('PXN pass-through paths (2-node, rail-paired)', () => {
   test('cross-rail GPU→NET is PXN via a rail-local peer GPU, not host-bridge', () => {
     const p = sys.paths.get('gpu-0->net-3')!
     expect(PathType[p.type]).toBe('PXN')
-    // the pass-through: hops run THROUGH a peer GPU that is PIX-local to
-    // net-3's rail. (Under the current interleaved-PCIe pairing model the
-    // rail's local set is {gpu-1, gpu-3} — the pending consecutive-pairing
-    // fix will narrow this; the invariant is locality, not a specific id.)
+    // the pass-through: hops run THROUGH the peer GPU that is PIX-local to
+    // net-3's rail. With dedicated 2-port switches (ledger #19) that peer is
+    // uniquely gpu-3 — but the invariant we pin is locality, not the id.
     const viaGpu = p.hops.map((h) => h.nodeId).find((id) => id.startsWith('gpu-'))
     expect(viaGpu).toBeDefined()
     const peerLocal = sys.paths.get(`${viaGpu}->net-3`)!

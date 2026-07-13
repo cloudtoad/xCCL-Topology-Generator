@@ -25,7 +25,9 @@ export const dgxH100Config: HardwareConfig = {
   pcie: {
     gen: PCIeGen.GEN5,
     width: 16,
-    switchesPerCPU: 2,
+    // Modern layout: a dedicated 2-port PCIe switch per GPU+NIC pair
+    // (4 per CPU × 2 CPUs = 8 switches; Azure ndv5-topo.xml structure).
+    switchesPerCPU: 4,
   },
   nvswitch: {
     count: 4,  // 4 NVSwitch

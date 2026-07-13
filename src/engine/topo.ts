@@ -310,9 +310,16 @@ export function buildTopoSystem(
 
     if (totalPciSwitches > 0) {
       // Route through PCIe switch: GPU -> PCI -> CPU
-      // Assign GPUs to switches: GPUs on CPU N use switches [N*switchesPerCpu .. (N+1)*switchesPerCpu)
+      // CONSECUTIVE-BLOCK assignment (real machines): GPUs on CPU N fill
+      // switches [N*switchesPerCpu ..) in blocks, so a 1-GPU-per-switch
+      // config yields the modern dedicated 2-port switch per GPU+NIC pair
+      // (Azure ndv5-topo.xml: 1 GPU + 1 NIC per switch). The previous
+      // modulo interleave ({0,2} {1,3} sharing switches) matched no
+      // shipping machine — ledger #19.
       const gpuIndexOnCpu = config.numaMapping.slice(0, g).filter((n) => n === numaIdx).length
-      const pciIdx = numaIdx * switchesPerCpu + (gpuIndexOnCpu % switchesPerCpu)
+      const gpusOnCpu = config.numaMapping.filter((n) => n === numaIdx).length
+      const gpusPerSwitch = Math.max(1, Math.ceil(gpusOnCpu / switchesPerCpu))
+      const pciIdx = numaIdx * switchesPerCpu + Math.floor(gpuIndexOnCpu / gpusPerSwitch)
 
       // GPU <-> PCI switch
       links.push({ fromId: `gpu-${g}`, toId: `pci-${pciIdx}`, type: LinkType.PCI, bandwidth: pciBw })
@@ -337,15 +344,22 @@ export function buildTopoSystem(
   //    distributed round-robin.
   // -------------------------------------------------------------------------
   for (let n = 0; n < config.nic.count; n++) {
-    // Use GPU's NUMA mapping if NIC index has a corresponding GPU, else round-robin
-    const cpuIdx = n < config.numaMapping.length
-      ? config.numaMapping[n]
-      : n % config.cpu.count
+    // NIC n serves GPU block [n*gpus/nics ..): with 8:8 that's GPU n (its
+    // rail partner); with 4:8 (the half-ratio small-deployment config) NIC n
+    // serves GPUs {2n, 2n+1} behind one shared switch. NUMA follows the
+    // served block's first GPU.
+    const servedGpu = Math.min(
+      Math.floor((n * config.gpu.count) / Math.max(1, config.nic.count)),
+      config.gpu.count - 1,
+    )
+    const cpuIdx = config.numaMapping[servedGpu] ?? n % config.cpu.count
 
     if (totalPciSwitches > 0) {
-      // Assign NIC to same PCIe switch as its paired GPU
-      const nicIndexOnCpu = config.numaMapping.slice(0, n).filter((c) => c === cpuIdx).length
-      const pciIdx = cpuIdx * switchesPerCpu + (nicIndexOnCpu % switchesPerCpu)
+      // Same switch as the served GPU block (consecutive, like the GPUs).
+      const gpuIndexOnCpu = config.numaMapping.slice(0, servedGpu).filter((c) => c === cpuIdx).length
+      const gpusOnCpu = config.numaMapping.filter((c) => c === cpuIdx).length
+      const gpusPerSwitch = Math.max(1, Math.ceil(gpusOnCpu / switchesPerCpu))
+      const pciIdx = cpuIdx * switchesPerCpu + Math.floor(gpuIndexOnCpu / gpusPerSwitch)
 
       // NIC <-> PCI switch
       links.push({ fromId: `nic-${n}`, toId: `pci-${pciIdx}`, type: LinkType.PCI, bandwidth: pciBw })

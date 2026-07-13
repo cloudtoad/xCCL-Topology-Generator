@@ -225,9 +225,24 @@ Found because the Build view's eligibility web drew cross-rail GPU→NET pairs a
 lines and the user objected that a NIC can't serve foreign GPUs except via pass-through —
 the visualization surfaced the engine gap. `pxn-paths.test.ts` (4 tests) pins: cross-rail
 = PXN through a PIX-local peer, local rail stays direct PIX, PXN bw = min of legs,
-`NCCL_PXN_DISABLE=1` falls back to the host bridge. Note: under the current interleaved
-PCIe pairing model a rail has TWO PIX-local GPUs — the pending consecutive-pairing fix
-will narrow the peer set (test asserts locality, not a specific peer id).
+`NCCL_PXN_DISABLE=1` falls back to the host bridge. Note: under the then-current
+interleaved PCIe pairing model a rail had TWO PIX-local GPUs — resolved by #19 below
+(test asserts locality, not a specific peer id, so it survived the change unmodified).
+
+### #19 — PCIe switch pairing was modulo-interleaved; real deployments use dedicated per-pair switches (2026-07-13, user field guidance) — FIXED
+
+| # | Divergence (was → now) | Anchor | Severity |
+|---|------------------------|--------|----------|
+| 19 | `topo.ts` assigned GPUs to switches round-robin (`gpuIndexOnCpu % switchesPerCpu` → {0,2} and {1,3} sharing a switch) and NICs independently by `n % switch count` → now **consecutive-block** assignment: GPUs fill switches in blocks, and each NIC lands on the switch of the GPU it serves (`servedGpu = floor(n·gpuCount/nicCount)`). DGX H100 template moves to `switchesPerCPU: 4` = 8 dedicated 2-port switches, one GPU + one NIC each | Azure ndv5-topo.xml (golden) · user field guidance: modern fabrics run a dedicated NIC per GPU, on-board or behind a dedicated 2-port PCIe switch; smaller shops predictably run half the NICs (4:8) | **moderate** (path classes wrong at the rail edge: two GPUs were PIX-local per NIC, so ring exits rode PIX that should be PXN) |
+
+Consequences pinned by tests: with dedicated switches only ONE GPU is PIX-local per
+rail, so each ring's exit leg comes home over **PXN through the rail owner** — exactly
+the designed rail-optimized behavior (NCCL 2.12 PXN blog; paths.cc:725-749) — and
+crossNic stays 0 *because* PXN exists (`inter-search.test.ts`). The half-ratio variant
+ships as `templates/hgx-h100-4nic.ts` (switchesPerCPU 2 → 2 GPUs + 1 NIC per switch);
+`half-nic.test.ts` pins conservation at the half ratio: 4 NICs → exactly 4 channels,
+each entering at a GPU from its NIC's served pair. Node-count golden updated 4→8
+switches (`fidelity.test.ts`).
 
 ## Missing Features
 | NCCL Feature | Source Location | Priority | Notes |

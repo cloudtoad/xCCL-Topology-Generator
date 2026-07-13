@@ -244,7 +244,7 @@ describe('buildTopoSystem', () => {
     expect(cpus.length).toBe(2)
     expect(nics.length).toBe(8)
     expect(nvs.length).toBe(1) // one logical NVS node (#1197 shows a single NVS/0)
-    expect(pci.length).toBe(4) // 2 switches/CPU * 2 CPUs
+    expect(pci.length).toBe(8) // dedicated 2-port switch per GPU+NIC pair (ndv5 layout, ledger #19)
   })
 
   test('DGX H100: NVSwitch links present', () => {
