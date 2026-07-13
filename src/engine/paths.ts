@@ -316,7 +316,12 @@ function applyPxnPaths(
 
   let pxnCount = 0
 
-  for (const nic of nicNodes) {
+  // The rewrite must cover BOTH GPU→NIC and GPU→NET paths: the inter-node
+  // search consults GPU→NET (RecNet entry/exit, search.cc:791-830), and a
+  // NET inherits its NIC's locality. Rewriting only NIC paths left cross-rail
+  // GPU→NET pairs classified through the host bridge (ledger #18).
+  const netNodes = system.nodesByType.get(NodeType.NET) ?? []
+  for (const nic of [...nicNodes, ...netNodes]) {
     // Find the "local GPU" for this NIC: the GPU with the best direct path
     // (lowest path type, highest BW). Mirrors ncclTopoGetLocalGpu.
     let localGpu: TopoNode | null = null
@@ -395,7 +400,7 @@ function applyPxnPaths(
   if (pxnCount > 0) {
     log.emit(
       'computePaths',
-      `PXN optimization: upgraded ${pxnCount} GPU→NIC paths`,
+      `PXN optimization: upgraded ${pxnCount} GPU→NIC/NET paths`,
       'Routed through NVLink-connected peer GPUs for better NIC access',
       'paths.cc:725',
       [],

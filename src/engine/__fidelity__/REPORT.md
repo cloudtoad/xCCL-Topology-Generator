@@ -215,6 +215,20 @@ the fix: the 2-node solution enters the ladder AT its ceiling (maxBw on the NET-
 view = 20), so pass 2 has no headroom there — while single-server H100 climbs 40/50/60
 and correctly fails each rung under the 12-channel lock.
 
+### #18 — PXN rewrite skipped GPU→NET paths (2026-07-13, found by a user's eye on the Build view) — FIXED
+
+| # | Divergence (was → now) | NCCL ref | Severity |
+|---|------------------------|----------|----------|
+| 18 | `applyPxnPaths` rewrote **GPU→NIC** paths only; the inter-node search consults **GPU→NET** (RecNet entry/exit), so cross-rail exits kept their pre-PXN host-bridge classes (PHB/SYS) → the rewrite now covers NET targets too: cross-rail GPU→NET is PXN via an NVLink peer that is PIX-local to the rail, bw = min(NVLink leg, rail leg) | paths.cc:725-749 · search.cc:791-830 | **moderate** (mis-classified eligibility for cross-rail exits; anchors unaffected — accepted 2-node solution uses local rails) |
+
+Found because the Build view's eligibility web drew cross-rail GPU→NET pairs as direct
+lines and the user objected that a NIC can't serve foreign GPUs except via pass-through —
+the visualization surfaced the engine gap. `pxn-paths.test.ts` (4 tests) pins: cross-rail
+= PXN through a PIX-local peer, local rail stays direct PIX, PXN bw = min of legs,
+`NCCL_PXN_DISABLE=1` falls back to the host bridge. Note: under the current interleaved
+PCIe pairing model a rail has TWO PIX-local GPUs — the pending consecutive-pairing fix
+will narrow the peer set (test asserts locality, not a specific peer id).
+
 ## Missing Features
 | NCCL Feature | Source Location | Priority | Notes |
 |-------------|----------------|----------|-------|

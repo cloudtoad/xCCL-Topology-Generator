@@ -57,6 +57,8 @@ const PATH_COLORS: Record<number, string> = {
   [PathType.NVB]: '#66d9ff',
   [PathType.PIX]: '#00ff41',
   [PathType.PXB]: '#aaff00',
+  [PathType.P2C]: '#66ffcc',
+  [PathType.PXN]: '#aa66ff',
   [PathType.PHB]: '#ff9900',
   [PathType.SYS]: '#ff0040',
   [PathType.NET]: '#ff6600',
