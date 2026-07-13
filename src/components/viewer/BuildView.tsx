@@ -25,8 +25,9 @@ import { useTopologyStore } from '../../store/topology-store'
 import { useUIStore } from '../../store/ui-store'
 import { useLayout } from '../../hooks/useLayout'
 import { buildStateAt } from '../../engine/ring-build-trace'
-import { NodeType } from '../../engine/types'
-import { channelColors } from '../../utils/colors'
+import { NodeType, PathType } from '../../engine/types'
+import { channelColors, linkInkWidth } from '../../utils/colors'
+import { PATH_TYPE_STR } from '../../engine/log-replay'
 
 type Vec3 = [number, number, number]
 
@@ -49,6 +50,17 @@ function arc(from: Vec3, to: Vec3, lift: number, segments = 20): Vec3[] {
 
 const SLOT_SPACING = 1.35
 const SLIDE_SPEED = 6 // lerp factor per second
+
+// Path-class colors for the evaluation web (locality ladder, best → worst).
+const PATH_COLORS: Record<number, string> = {
+  [PathType.NVL]: '#00ffff',
+  [PathType.NVB]: '#66d9ff',
+  [PathType.PIX]: '#00ff41',
+  [PathType.PXB]: '#aaff00',
+  [PathType.PHB]: '#ff9900',
+  [PathType.SYS]: '#ff0040',
+  [PathType.NET]: '#ff6600',
+}
 
 /** One GPU tile that slides toward its current ring slot. */
 function GpuTile({
@@ -253,6 +265,61 @@ export function BuildView() {
           </group>
         )
       })}
+
+      {/* Evaluation web: while the ladder searches (no construction yet),
+          show every path ELIGIBLE under the current attempt's constraints —
+          color = path class, ink width = bandwidth. Each fired rung visibly
+          grows the road network. */}
+      {state.currentChannel === null && state.rings.size === 0 && state.lastAttempt && (() => {
+        const a = state.lastAttempt
+        const arcs: { key: string; from: Vec3; to: Vec3; color: string; bw: number }[] = []
+        for (let i = 0; i < gpus.length; i++) {
+          for (let j = i + 1; j < gpus.length; j++) {
+            const path = system.paths.get(`${gpus[i].id}->${gpus[j].id}`)
+            if (!path || path.type > a.typeIntra || path.bandwidth < a.speed) continue
+            const from = posOf.get(gpus[i].id)
+            const to = posOf.get(gpus[j].id)
+            if (from && to) arcs.push({
+              key: `web-${i}-${j}`, from, to,
+              color: PATH_COLORS[path.type] ?? '#8888aa', bw: path.bandwidth,
+            })
+          }
+        }
+        if (system.inter) {
+          for (const gpu of gpus) {
+            for (const net of nets) {
+              const path = system.paths.get(`${gpu.id}->${net.id}`)
+              if (!path || path.type > a.typeInter || path.bandwidth < a.speed) continue
+              const from = posOf.get(gpu.id)
+              const to = netPosOf.get(net.id)
+              if (from && to) arcs.push({
+                key: `web-${gpu.id}-${net.id}`, from, to,
+                color: PATH_COLORS[path.type] ?? '#8888aa', bw: path.bandwidth,
+              })
+            }
+          }
+        }
+        return (
+          <group>
+            {arcs.map((w) => (
+              <Line
+                key={w.key}
+                points={arc(w.from, w.to, 0.32 + (w.bw / 400))}
+                color={w.color}
+                lineWidth={linkInkWidth(w.bw) * 0.6}
+                transparent
+                opacity={0.3}
+                toneMapped={false}
+              />
+            ))}
+            <Billboard position={[0, 3.6, rowZ]}>
+              <Text fontSize={0.24} color="#8899aa" anchorX="center">
+                {`${arcs.length} paths eligible under attempt ${a.n} (speed ≥ ${a.speed}, typeIntra ≤ ${PATH_TYPE_STR[a.typeIntra] ?? a.typeIntra}${system.inter ? `, typeInter ≤ ${PATH_TYPE_STR[a.typeInter] ?? a.typeInter}` : ''})`}
+              </Text>
+            </Billboard>
+          </group>
+        )
+      })()}
 
       {/* NET chips (inter-node search entry/exit points) */}
       {nets.map((n) => (

@@ -1182,11 +1182,6 @@ export function ncclTopoCompute(
       initRemainingBw(state, system)
 
       attemptCounter++
-      tracer?.push({
-        kind: 'attempt', n: attemptCounter, speed,
-        sameChannels, pattern: localPattern,
-        typeIntra: localTypeIntra, typeInter: localTypeInter, crossNic: localCrossNic,
-      })
 
       const nChannels =
         system.inter && localPattern === NCCL_TOPO_PATTERN_RING
@@ -1210,6 +1205,7 @@ export function ncclTopoCompute(
 
       globalIterations = state.globalIterations
 
+      let attemptKept = false
       if (nChannels >= minChannels) {
         // Found a valid solution
         const totalBw = speed * nChannels
@@ -1239,7 +1235,15 @@ export function ncclTopoCompute(
           }
           acceptedParams = { speed, sameChannels, pattern: localPattern, crossNic: localCrossNic }
           dupInfo = null
+          attemptKept = true
         }
+
+        tracer?.push({
+          kind: 'attempt', n: attemptCounter, speed,
+          sameChannels, pattern: localPattern,
+          typeIntra: localTypeIntra, typeInter: localTypeInter, crossNic: localCrossNic,
+          found: nChannels, kept: attemptKept,
+        })
 
         // Check optimality: time == -1 means the search completed without timeout
         // and totalBw >= system.totalBw means we saturate available bandwidth
@@ -1260,6 +1264,13 @@ export function ncclTopoCompute(
           phase1Done = true
           break
         }
+      } else {
+        tracer?.push({
+          kind: 'attempt', n: attemptCounter, speed,
+          sameChannels, pattern: localPattern,
+          typeIntra: localTypeIntra, typeInter: localTypeInter, crossNic: localCrossNic,
+          found: nChannels, kept: false,
+        })
       }
 
       // --- Relaxation cascade (search.cc:1140-1180) ---

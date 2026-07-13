@@ -25,7 +25,7 @@ export type RingBuildEvent =
   | { kind: 'phase'; label: string; detail: string; sourceRef: string }
   | { kind: 'speed'; speed: number; detail: string }
   | { kind: 'relax'; action: string; reason: string; sourceRef: string }
-  | { kind: 'attempt'; n: number; speed: number; sameChannels: number; pattern: number; typeIntra: number; typeInter: number; crossNic: number }
+  | { kind: 'attempt'; n: number; speed: number; sameChannels: number; pattern: number; typeIntra: number; typeInter: number; crossNic: number; found: number; kept: boolean }
   | { kind: 'accepted'; speed: number; sameChannels: number; typeIntra: number; typeInter: number; crossNic: number; nChannels: number }
   | { kind: 'improve'; fromSpeed: number; toSpeed: number; kept: boolean }
   | { kind: 'channel-start'; channel: number; startGpu: string; speed: number; reused: boolean; net?: string }
@@ -91,6 +91,13 @@ export interface RingBuildState {
   /** Inter-node: the NET each channel entered from / exits to (RecNet). */
   netIn: Map<number, string>
   netOut: Map<number, string>
+  /** Latest search attempt (constraint set + outcome) — drives the eval HUD. */
+  lastAttempt: Extract<RingBuildEvent, { kind: 'attempt' }> | null
+  /** Incumbent best-so-far (kept attempts only). */
+  best: { nChannels: number; speed: number } | null
+  /** Accepted-solution event, once the ladder concludes. */
+  accepted: Extract<RingBuildEvent, { kind: 'accepted' }> | null
+  phaseLabel: string
 }
 
 export function buildStateAt(trace: RingBuildTrace, idx: number): RingBuildState {
@@ -105,6 +112,10 @@ export function buildStateAt(trace: RingBuildTrace, idx: number): RingBuildState
     speed: 0,
     netIn: new Map(),
     netOut: new Map(),
+    lastAttempt: null,
+    best: null,
+    accepted: null,
+    phaseLabel: '',
   }
   const n = Math.max(0, Math.min(idx, trace.events.length))
   for (let i = 0; i < n; i++) {
@@ -112,6 +123,16 @@ export function buildStateAt(trace: RingBuildTrace, idx: number): RingBuildState
     switch (e.kind) {
       case 'speed':
         state.speed = e.speed
+        break
+      case 'phase':
+        state.phaseLabel = e.label
+        break
+      case 'attempt':
+        state.lastAttempt = e
+        if (e.kept) state.best = { nChannels: e.found, speed: e.speed }
+        break
+      case 'accepted':
+        state.accepted = e
         break
       case 'channel-start':
         state.rings.set(e.channel, [e.startGpu])

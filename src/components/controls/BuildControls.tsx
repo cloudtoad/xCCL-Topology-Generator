@@ -12,7 +12,7 @@ function prose(e: RingBuildEvent | null): string {
     case 'relax':
       return `No solution yet → relax: ${e.action} (${e.reason}, ${e.sourceRef}).`
     case 'attempt':
-      return `Attempt ${e.n}: search @ ${e.speed} GB/s — sameChannels=${e.sameChannels}, typeIntra≤${e.typeIntra}, typeInter≤${e.typeInter}, crossNic=${e.crossNic}.`
+      return `Attempt ${e.n} @ ${e.speed} GB/s (sameCh=${e.sameChannels}, typeIntra≤${e.typeIntra}, typeInter≤${e.typeInter}, crossNic=${e.crossNic}) → found ${e.found} channel${e.found === 1 ? '' : 's'} — ${e.kept ? 'NEW BEST, kept' : 'not better, discarded'}.`
     case 'accepted':
       return `ACCEPTED: ${e.nChannels} channels @ ${e.speed} GB/s (sameChannels=${e.sameChannels}, crossNic=${e.crossNic}) — parameters locked; replaying construction.`
     case 'improve':

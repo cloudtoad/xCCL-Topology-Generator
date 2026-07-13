@@ -6,6 +6,7 @@ import { scenarioFor, loadScenario } from '../../scenarios'
 import { Scene3D } from '../viewer/Scene3D'
 import { SimControls } from '../controls/SimControls'
 import { BuildControls } from '../controls/BuildControls'
+import { BuildHud } from '../controls/BuildHud'
 import { WalkthroughView } from '../walkthrough/WalkthroughView'
 import { AtlasView } from '../atlas/AtlasView'
 
@@ -34,7 +35,7 @@ export function MainLayout() {
             <>
               <Scene3D />
               {viewMode === 'sim' && <SimControls />}
-              {viewMode === 'build' && <BuildControls />}
+              {viewMode === 'build' && <><BuildControls /><BuildHud /></>}
             </>
           )}
         </div>
