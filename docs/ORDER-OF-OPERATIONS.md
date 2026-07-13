@@ -11,6 +11,8 @@ document is the authoritative, source-cited statement of those cascades.
 - **Engine:** every rule below is implemented in `src/engine/` and cross-referenced in the tables.
 - **Live trace:** the `DecisionLog` (Decisions tab) emits the *dynamic* firing of these rules for any
   generated topology — the "`show ip bgp`" to this document's "best-path algorithm."
+- **Control flow:** the full pipeline as pseudo-code with every loop and branch —
+  [DECISION-FLOW.md](DECISION-FLOW.md) (the systems-analysis chart to this document's rulebook).
 
 Line numbers are from the referenced checkout and may drift ±a few lines across NCCL versions;
 rule *content* is version-stable. There are **five nested cascades**:
