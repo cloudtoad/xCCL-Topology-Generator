@@ -229,6 +229,13 @@ export function BuildView() {
   nets.forEach((n, i) => {
     netPosOf.set(n.id, [(i - (nets.length - 1) / 2) * SLOT_SPACING, 0.02, rowZ - 3.0])
   })
+
+  // NVS: below the GPU row, centered — the backplane the NVLink spokes
+  // converge on (NICs above, GPUs middle, switch fabric beneath).
+  const nvsPosOf = new Map<string, Vec3>()
+  nvs.forEach((n, i) => {
+    nvsPosOf.set(n.id, [(i - (nvs.length - 1) / 2) * 1.4, 0.02, rowZ + 2.2])
+  })
   const currentNetIn =
     state.currentChannel !== null ? state.netIn.get(state.currentChannel) : undefined
   const currentNetOut =
@@ -248,12 +255,12 @@ export function BuildView() {
         />
       ))}
 
-      {/* NVS (context) */}
+      {/* NVS (context) — beneath the GPU row */}
       {nvs.map((n) => {
-        const pos = layout.nodePositions.get(n.id)
+        const pos = nvsPosOf.get(n.id)
         if (!pos) return null
         return (
-          <group key={n.id} position={[pos[0], 0.02, pos[2]]}>
+          <group key={n.id} position={pos}>
             <mesh rotation={[-Math.PI / 2, 0, 0]}>
               <circleGeometry args={[0.4, 24]} />
               <meshStandardMaterial color="#0a0a0f" emissive="#665500" emissiveIntensity={0.2} side={DoubleSide} />
@@ -280,10 +287,7 @@ export function BuildView() {
         const wpPos = (id: string): Vec3 | undefined => {
           const slot = posOf.get(id) ?? netPosOf.get(id)
           if (slot) return slot
-          if (nvsIds.has(id)) {
-            const p = layout.nodePositions.get(id)
-            if (p) return [p[0], 0.02, p[2]]
-          }
+          if (nvsIds.has(id)) return nvsPosOf.get(id)
           return undefined
         }
         // One pair = ONE path (SPFA chose it at the paths stage). Route each
