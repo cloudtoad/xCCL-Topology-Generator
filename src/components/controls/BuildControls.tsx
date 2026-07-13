@@ -59,22 +59,43 @@ export function BuildControls() {
   const playing = useBuildStore((s) => s.playing)
   const playPause = useBuildStore((s) => s.playPause)
   const seek = useBuildStore((s) => s.seek)
+  const advance = useBuildStore((s) => s.advance)
+  const retreat = useBuildStore((s) => s.retreat)
   const reset = useBuildStore((s) => s.reset)
+  const condensed = useBuildStore((s) => s.condensed)
+  const stops = useBuildStore((s) => s.stops)
+  const toggleCondensed = useBuildStore((s) => s.toggleCondensed)
 
   if (!trace) return null
 
   const last = idx > 0 ? trace.events[idx - 1] : null
+  // stop we're on (or the nearest one at/behind us, after a raw seek)
+  const stopPos = condensed
+    ? stops.reduce((acc, s, i) => (s.idx <= idx ? i : acc), 0)
+    : -1
+  const atStop = condensed && stops[stopPos]?.idx === idx ? stops[stopPos] : null
 
   return (
     <div className="absolute bottom-4 left-1/2 -translate-x-1/2 w-[min(46rem,90%)] rounded border border-surface-600 bg-surface-900/90 backdrop-blur px-4 py-2">
       {/* Narration */}
       <div className="text-[12px] text-gray-200 leading-snug min-h-[2.4em] mb-1.5">
         {prose(last)}
+        {atStop?.note && (
+          <div className="text-[11px] text-amber-300/90 mt-0.5">
+            ⏩ {atStop.note}
+            {atStop.skipped ? ` · ${atStop.skipped} repeated steps skipped` : ''}
+          </div>
+        )}
+        {!atStop?.note && atStop?.skipped ? (
+          <div className="text-[11px] text-amber-300/90 mt-0.5">
+            ⏩ {atStop.skipped} repeated steps skipped
+          </div>
+        ) : null}
       </div>
       {/* Transport */}
       <div className="flex items-center gap-3">
         <button onClick={reset} title="Reset build" className="btn-secondary text-xs px-2">⏮</button>
-        <button onClick={() => seek(idx - 1)} title="Previous event" className="btn-secondary text-xs px-2">◀</button>
+        <button onClick={retreat} title="Previous step" className="btn-secondary text-xs px-2">◀</button>
         <button
           onClick={playPause}
           title={playing ? 'Pause build' : 'Play build'}
@@ -82,19 +103,42 @@ export function BuildControls() {
         >
           {playing ? '⏸' : '▶'}
         </button>
-        <button onClick={() => seek(idx + 1)} title="Next event" className="btn-secondary text-xs px-2">▶|</button>
-        <input
-          type="range"
-          min={0}
-          max={trace.events.length}
-          value={idx}
-          onChange={(e) => seek(Number(e.target.value))}
-          className="flex-1 accent-cyan-400"
-          title="Scrub build"
-        />
-        <span className="text-[11px] text-gray-400 tabular-nums w-24 text-right">
-          {idx}/{trace.events.length}
+        <button onClick={advance} title="Next step" className="btn-secondary text-xs px-2">▶|</button>
+        {condensed ? (
+          <input
+            type="range"
+            min={0}
+            max={Math.max(0, stops.length - 1)}
+            value={stopPos}
+            onChange={(e) => seek(stops[Number(e.target.value)]?.idx ?? 0)}
+            className="flex-1 accent-cyan-400"
+            title="Scrub build (condensed stops)"
+          />
+        ) : (
+          <input
+            type="range"
+            min={0}
+            max={trace.events.length}
+            value={idx}
+            onChange={(e) => seek(Number(e.target.value))}
+            className="flex-1 accent-cyan-400"
+            title="Scrub build (every event)"
+          />
+        )}
+        <span className="text-[11px] text-gray-400 tabular-nums text-right">
+          {condensed ? `${stopPos}/${stops.length - 1}` : `${idx}/${trace.events.length}`}
         </span>
+        <button
+          onClick={toggleCondensed}
+          title={
+            condensed
+              ? `Condensed: ${stops.length - 1} distinct steps of ${trace.events.length} events — repeats are jumped with a label. Click for the full trace.`
+              : `Full trace: all ${trace.events.length} events, repeats included. Click to condense.`
+          }
+          className={`btn-secondary text-[10px] px-2 whitespace-nowrap ${condensed ? 'text-amber-300 border-amber-300/30' : 'text-gray-400'}`}
+        >
+          {condensed ? '⏩ condensed' : 'full trace'}
+        </button>
       </div>
     </div>
   )
