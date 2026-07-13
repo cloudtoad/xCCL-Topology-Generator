@@ -8,6 +8,10 @@ communicator. Old-school systems-analysis style: numbered stations, labeled GOTO
 
 ---
 
+*Rendered companion: [diagrams/L0-SSA.png](diagrams/L0-SSA.png) — the L0 stage as a
+Structured Systems Analysis chart (numbered processes, data stores, external entities,
+labeled flows); source in [diagrams/L0-SSA.mmd](diagrams/L0-SSA.mmd).*
+
 ## The big picture
 
 ```
@@ -32,10 +36,14 @@ communicator. Old-school systems-analysis style: numbered stations, labeled GOTO
         │    NEXT graph ────────────────────────────────────────────┘  │
         └──────────────────────────────┬───────────────────────────────┘
         ┌──────────────────────────────▼───────────────────────────────┐
-        │ 75 ALLGATHER-3  publish tuples · min/max merge · node ids    │
+        │ 75 PRESET      channel skeletons · PRODUCES topoRanks        │
         └──────────────────────────────┬───────────────────────────────┘
         ┌──────────────────────────────▼───────────────────────────────┐
-        │ 80 PRESET/POSTSET  channel skeletons · cross-node stitch     │
+        │ 78 ALLGATHER-3  exchange {graphInfo, topoRanks} · min/max    │
+        │                 merge · node ids from ring data              │
+        └──────────────────────────────┬───────────────────────────────┘
+        ┌──────────────────────────────▼───────────────────────────────┐
+        │ 80 POSTSET     cross-node stitch (consumes merged topoRanks) │
         └──────────────────────────────┬───────────────────────────────┘
         ┌──────────────────────────────▼───────────────────────────────┐
         │ 85 TRANSPORTS  per peer: p2p → shm → net (first wins) → QPs  │
@@ -179,27 +187,37 @@ PROC RECURSE(gpu, step):                                          search.cc:622+
       NEXT c                                   ┘
 ```
 
-## Station 75 — AllGather3: the consensus merge loop
+## Station 75 — Preset (BEFORE the exchange — it builds the payload)
 
 ```
-75.1  publish {pattern, nChannels, sameChannels, bwIntra, bwInter,
-               typeIntra, typeInter, crossNic} × topoRanks         init.cc:983-996
-75.2  RING-ALLGATHER (same relay as 05.2)
-75.3  FOR r IN ranks:              # ══ capability negotiation ══  init.cc:1438-1446
+75.1  comm->nChannels ← MIN(ring.nChannels, tree.nChannels)        init.cc:1279
+75.2  PRESET: FOR ch IN channels: FOR rank: stamp ring.prev/next   connect.cc:20
+        → writes topoRanks (ringRecv/ringSend per channel) INTO
+          allGather3Data[rank] — the exchange's payload            init.cc:1280
+```
+
+## Station 78 — AllGather3: exchange + the consensus merge loop
+
+```
+78.1  publish {pattern, nChannels, sameChannels, bwIntra, bwInter,
+               typeIntra, typeInter, crossNic} × topoRanks         init.cc:983-996, 1257-1275
+78.2  bootstrapAllGather(allGather3Data)                           init.cc:1282
+      RING-ALLGATHER (same relay as 05.2)
+78.3  FOR r IN ranks:              # node numbering FROM RING DATA init.cc:1291-1300
+        firstRank ← topoRanks(r).ringRecv[0]
+        IF firstRank unseen → node[next++] ← firstRank
+78.4  FOR r IN ranks:              # ══ capability negotiation ══  init.cc:1438-1446
         nChannels    ← MIN   sameChannels ← MIN
         bwIntra      ← MIN   bwInter      ← MIN
         typeIntra    ← MAX   typeInter    ← MAX   crossNic ← MAX
-75.4  FOR r IN ranks:              # node numbering FROM RING DATA init.cc:1291-1300
-        firstRank ← topoRanks(r).ringRecv[0]
-        IF firstRank unseen → node[next++] ← firstRank
-75.5  IF NVLS graph merged to 0 channels → nvlsSupport ← 0         init.cc:1446
+78.5  IF NVLS graph merged to 0 channels → nvlsSupport ← 0         init.cc:1446
 ```
 
 ## Stations 80–90 — Install, connect, tune
 
 ```
-80.1  PRESET:  FOR ch IN channels: FOR rank: stamp ring.prev/next  connect.cc:20
-80.2  POSTSET: FOR ch: FOR node n: stitch exit(n) → entry(n+1)     connect.cc:380
+80.1  POSTSET: FOR ch: FOR node n: stitch exit(n) → entry(n+1)     connect.cc:380
+      (consumes merged allTopoRanks + nodesFirstRank)              init.cc:1480
       trees FOLD from the same intra orders — no second search
 85.1  FOR ch: FOR peer IN {prev, next, tree up/down}:
         LOOP t IN [p2p, shm, net]:                                 transport.cc:15-42

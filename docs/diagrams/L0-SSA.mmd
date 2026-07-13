@@ -1,0 +1,86 @@
+%% ═══ STRUCTURED SYSTEMS ANALYSIS — NCCL L0 PIPELINE (initTransportsRank) ═══
+%% Numbered processes (rounded), data stores (cylinders), external entities
+%% (rectangles), labeled data flows. NCCL 2.30.7, ref/src/nccl.
+%% Regenerate: feed this file to the mermaid MCP (theme neutral, white bg).
+%% NOTE the load-bearing ordering: 7.0 PRESET runs BEFORE 7b EXCHANGE because
+%% preset fills topoRanks — the exchange's payload (init.cc:1279-1282).
+flowchart TB
+  E1[sysfs + NVML<br/>hardware truth]
+  E2[Environment<br/>NCCL_TOPO_FILE · MIN/MAX_NCHANNELS<br/>NCCL_ALGO · NCCL_GRAPH_FILE]
+  E3[Bootstrap ring<br/>peer ranks 0..N-1]
+
+  D0[(peerInfo store<br/>hostHash · fabricInfo<br/>from AllGather1)]
+  D2[(comm-&gt;topo<br/>ncclTopoSystem<br/>GPU·PCI·NVS·CPU·NIC·NET)]
+  D3[(paths matrix<br/>type + bw per pair)]
+  D4[(graphs array<br/>ncclTopoGraph per algo:<br/>pattern·nChannels·bwIntra/Inter·<br/>types·crossNic·intra·inter)]
+  D5[(allGather3Data 0..N-1<br/>graphInfo x algos + topoRanks)]
+  D6[(nodesFirstRank<br/>rankToNode)]
+  D7[(comm-&gt;channels<br/>ring prev/next · tree up/down)]
+  D8[(connectors + QPs)]
+  D9[(tuning thresholds<br/>latency tables)]
+
+  P1(["1.0 BUILD TOPOLOGY<br/>ncclTopoGetSystem<br/>init.cc:1141 · topo.cc:1765"])
+  P2(["2.0 COMPUTE PATHS — SPFA<br/>ncclTopoComputePaths<br/>init.cc:1143 / :1147"])
+  P3(["3.0 TRIM UNREACHABLE<br/>ncclTopoTrimSystem<br/>init.cc:1145"])
+  P5(["5.0 SEARCH INIT<br/>maxBw · totalBw ceilings<br/>search.cc:14-53"])
+  P6(["6.0 COMPUTE GRAPHS<br/>ncclTopoCompute — two-pass ladder<br/>machine, DECISION-FLOW §60<br/>init.cc:1174-1215"])
+  P7(["7.0 PRESET<br/>ncclTopoPreset — stamps skeletons,<br/>FILLS topoRanks payload<br/>init.cc:1279-1280 · connect.cc:20"])
+  P7b(["7b EXCHANGE + MERGE<br/>bootstrapAllGather · min/max fold ·<br/>node ids from ringRecv 0<br/>init.cc:1282 · 1291-1300 · 1438-1446"])
+  P8(["8.0 POSTSET<br/>ncclTopoPostset — cross-node stitch<br/>init.cc:1480 · connect.cc:380"])
+  P9(["9.0 TRANSPORTS<br/>ncclTransportP2pSetup<br/>p2p&gt;shm&gt;net first-wins → QPs<br/>init.cc:1631 · transport.cc:15-42"])
+  P10(["10.0 TUNE<br/>ncclTopoTuneModel<br/>init.cc:1644 · tuning.cc"])
+
+  DONE[/"COMM READY — this flow never runs again<br/>(no reconvergence edge exists)"/]
+
+  E1 -- "PCIe tree · NVLink regs" --> P1
+  E2 -- "NCCL_TOPO_FILE override" --> P1
+  D0 -- "fabricInfo MNNVL · hostHashes" --> P1
+  P1 -- "typed graph" --> D2
+
+  D2 --> P2
+  P2 -- "best-bw paths, classified<br/>LOC..NVL..PIX..PXB..PHB..SYS..NET" --> D3
+  D3 --> P3
+  P3 -- "trimmed system" --> D2
+  P3 -. "LOOP: recompute after trim<br/>(2nd and final pass)" .-> P2
+
+  D2 --> P5
+  D3 --> P5
+  P5 -- "maxBw · totalBw" --> P6
+  E2 -- "channel bounds · overrides" --> P6
+  D3 -- "path types + bw budgets" --> P6
+  P6 -- "one ncclTopoGraph per algo" --> D4
+  P6 -. "LOOP x5: RING first and mandatory ·<br/>TREE bounded by ring · CollNet/NVLS conditional" .-> P6
+
+  D4 -- "graphInfo tuples (8 fields)" --> P7
+  P7 -- "ring prev/next skeletons" --> D7
+  P7 -- "topoRanks: ringRecv/ringSend" --> D5
+
+  D5 --> P7b
+  P7b -- "my row out · all rows in" --- E3
+  P7b -- "merged graphs: MIN channels/bw ·<br/>MAX path types/crossNic" --> D4
+  P7b -- "node numbering" --> D6
+
+  D4 --> P8
+  D5 -- "allTopoRanks" --> P8
+  D6 --> P8
+  P8 -- "stitched rings · folded trees" --> D7
+
+  D7 --> P9
+  D2 -- "path types per peer pair" --> P9
+  E3 -- "ncclConnect handshakes<br/>(bootstrap p2p)" --> P9
+  P9 -- "QPs = nChannels x nNodes x qpsPerConn" --> D8
+  P8 -- "control: next (init.cc:1631)" --> P9
+
+  P9 -- "control: next (init.cc:1644)" --> P10
+  D4 --> P10
+  P10 -- "algo/proto per size" --> D9
+  P10 --> DONE
+
+  classDef entity fill:#e8e8e8,stroke:#222,stroke-width:2px,color:#111
+  classDef process fill:#ffffff,stroke:#111,stroke-width:1.5px,color:#111
+  classDef store fill:#f4f0e4,stroke:#555,stroke-width:1.2px,color:#111
+  classDef term fill:#111,stroke:#111,color:#fff
+  class E1,E2,E3 entity
+  class P1,P2,P3,P5,P6,P7,P7b,P8,P9,P10 process
+  class D0,D2,D3,D4,D5,D6,D7,D8,D9 store
+  class DONE term

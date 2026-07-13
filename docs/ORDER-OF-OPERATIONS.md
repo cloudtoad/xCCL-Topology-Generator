@@ -89,8 +89,9 @@ Each rank fills `ncclPeerInfo` (busId, **hostHash**, …, init.cc:711-717) and
   literally derived from ring structure.
 
 Only now does topology detection (`ncclTopoGetSystem`) run — entering L0. And one more
-cross-rank step lives *between* graph computation and channel wiring, included in the
-pipeline table below as step 6b: **AllGather3** (init.cc:969-996, 1257-1275) — every rank
+cross-rank step lives *between* preset and postset, included in the pipeline table below
+as step 7b (note the order: **preset runs first**, because preset fills `topoRanks` —
+the very payload the exchange carries, init.cc:1280-1282): **AllGather3** (init.cc:969-996, 1257-1275) — every rank
 publishes its independently computed graph parameters (`pattern, nChannels, sameChannels,
 bwIntra/bwInter, types`) plus `topoRanks`, and the ranks **reconcile to an agreed
 communicator-wide plan** before any channel is wired. The merge rule (init.cc:1438-1446)
@@ -140,8 +141,8 @@ tells you which phase died.**
 | 4 | Recompute paths | `ncclTopoComputePaths` | 1147 | `paths.ts computeAllPaths` |
 | 5 | Search init | `ncclTopoSearchInit` | 1149 | (folded into search) |
 | 6 | Compute graphs | `ncclTopoCompute` ×N | 1178–1215 | `search.ts` / `nvls.ts` |
-| 6b | Cross-rank graph consensus | AllGather3 (`bootstrapAllGather`) | 969-996, 1257-1275 | (not modeled — single-rank engine) |
-| 7 | Preset channels/trees | `ncclTopoPreset` | 1281 | `trees.ts` / `connect.ts` |
+| 7 | Preset channels/trees — **fills `topoRanks`, the exchange's payload** | `ncclTopoPreset` | 1280 | `trees.ts` / `connect.ts` |
+| 7b | Cross-rank consensus: exchange, min/max merge, node ids from ring data | AllGather3 (`bootstrapAllGather`) | 969-996, 1257-1282, 1291-1300, 1438-1446 | (not modeled — single-rank engine) |
 | 8 | Connect across nodes | `ncclTopoPostset` | 1480 | `connect.ts setupChannels` |
 | 9 | Establish transports (QPs) | `ncclTransportP2pSetup` | 1631 | `qp.ts` (modeled) |
 | 10 | Tune algo/proto | `ncclTopoTuneModel` | 1644 | `tuning.ts selectAlgorithm` |
