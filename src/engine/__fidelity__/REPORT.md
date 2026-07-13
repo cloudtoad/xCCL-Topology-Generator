@@ -197,6 +197,24 @@ DecisionLog entry). Cross-examining the #1197 lines yielded:
 | Hardware fact recovered | Ring line: 12 ch × 30 GB/s = 360 GB/s inter per node per direction ⇒ with 400G (50 GB/s) NICs the machine must have **≥ 8 NICs** — refuting the 4-NIC reading of that issue's topology. |
 | Conditionals pinned | Ring/tree lines show `sameChannels 1, type NVL/PIX, crossNic 0` ⇒ the relaxation cascade fired **zero** steps at the final speed. The NVLS line's `sameChannels 0` is the NVLS *starting* state (`trySameChannels = pattern==NVLS ? 0 : 1`, search.cc:1105), not a relaxation. |
 
+### #17 — Phase-2 (pass 2) semantics (2026-07-13, found by the L2 atlas audit) — FIXED
+
+| # | Divergence (was → now) | NCCL ref | Severity |
+|---|------------------------|----------|----------|
+| 17 | Phase 2 gated on `bestResult.time !== -1` (ran **only after a timeout** — i.e. almost never), forced `sameChannels=0`, kept the env `minChannels`, and climbed from where phase 1 *ended* → real pass 2 runs whenever budget remains (`time != 0`), starts **from the accepted solution** (its sameChannels/pattern/crossNic), **locks `minChannels = graph->nChannels`** (post-dup), re-derives the climb start from the post-dup speed, and applies the three-way pattern branch (RING raises bwIntra+bwInter; NVLS raises bwInter only, channels locked; tree-family raises bwIntra only) | search.cc:1255-1283 | **moderate** (behavior-inert on all anchors — climb attempts fail under the channel lock — but structurally wrong and it silenced pass 2 on clean solutions) |
+
+Model note: our engine searches with a single speed (`speedIntra == speedInter`), so the
+RING arm is exact while the NVLS/tree arms are structurally present but degenerate until
+two-speed search lands (tracked with the NVLS `bwInter` 40/60 open item). Also fixed in
+the same pass: the construction replay now uses the **accepted** `crossNic` rather than
+the initial env value. Trace gained `attempt` / `accepted` / `improve` events — the full
+ladder (rung chain, accepted params, attempt boundaries, climb) is now reconstructible
+from the trace alone (`trace-reconstruction.test.ts`, 5 tests). Anchors verified intact:
+H100 12ch@30 (#1197), 2-node 8ch@20×8 rails, MI300X goldens. Teaching fact surfaced by
+the fix: the 2-node solution enters the ladder AT its ceiling (maxBw on the NET-attached
+view = 20), so pass 2 has no headroom there — while single-server H100 climbs 40/50/60
+and correctly fails each rung under the 12-channel lock.
+
 ## Missing Features
 | NCCL Feature | Source Location | Priority | Notes |
 |-------------|----------------|----------|-------|

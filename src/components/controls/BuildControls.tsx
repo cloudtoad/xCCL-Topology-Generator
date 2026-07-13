@@ -11,6 +11,14 @@ function prose(e: RingBuildEvent | null): string {
       return `Trying ${e.speed} GB/s per channel — ${e.detail}.`
     case 'relax':
       return `No solution yet → relax: ${e.action} (${e.reason}, ${e.sourceRef}).`
+    case 'attempt':
+      return `Attempt ${e.n}: search @ ${e.speed} GB/s — sameChannels=${e.sameChannels}, typeIntra≤${e.typeIntra}, typeInter≤${e.typeInter}, crossNic=${e.crossNic}.`
+    case 'accepted':
+      return `ACCEPTED: ${e.nChannels} channels @ ${e.speed} GB/s (sameChannels=${e.sameChannels}, crossNic=${e.crossNic}) — parameters locked; replaying construction.`
+    case 'improve':
+      return e.kept
+        ? `Phase 2 climb: ${e.fromSpeed} → ${e.toSpeed} GB/s sustained the locked channel count — solution improved.`
+        : `Phase 2 climb to ${e.toSpeed} GB/s could not hold the channel count — kept ${e.fromSpeed} GB/s (search.cc:1267-1283).`
     case 'channel-start':
       if (e.net)
         return e.reused

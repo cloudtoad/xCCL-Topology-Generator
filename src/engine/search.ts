@@ -1133,7 +1133,8 @@ export function ncclTopoCompute(
 
   // Build-trace bookkeeping: the parameters of the ACCEPTED solution (for the
   // deterministic replay) and whether DupChannels doubled it afterwards.
-  let acceptedParams: { speed: number; sameChannels: number; pattern: number } | null = null
+  let acceptedParams: { speed: number; sameChannels: number; pattern: number; crossNic: number } | null = null
+  let attemptCounter = 0
   let dupInfo: { fromChannels: number; toChannels: number; bwBefore: number; bwAfter: number } | null = null
 
   tracer?.push({
@@ -1179,6 +1180,13 @@ export function ncclTopoCompute(
 
       // Initialize remaining bandwidth from system paths
       initRemainingBw(state, system)
+
+      attemptCounter++
+      tracer?.push({
+        kind: 'attempt', n: attemptCounter, speed,
+        sameChannels, pattern: localPattern,
+        typeIntra: localTypeIntra, typeInter: localTypeInter, crossNic: localCrossNic,
+      })
 
       const nChannels =
         system.inter && localPattern === NCCL_TOPO_PATTERN_RING
@@ -1229,7 +1237,7 @@ export function ncclTopoCompute(
             typeInter: localTypeInter,
             time: state.timedOut ? 0 : -1,
           }
-          acceptedParams = { speed, sameChannels, pattern: localPattern }
+          acceptedParams = { speed, sameChannels, pattern: localPattern, crossNic: localCrossNic }
           dupInfo = null
         }
 
@@ -1418,19 +1426,43 @@ export function ncclTopoCompute(
   }
 
   // =========================================================================
-  // Phase 2 — Optimize (search.cc:1192-1230)
+  // Phase 2 — Climb (search.cc:1255-1283). Real pass-2 semantics (#17):
+  //   - runs whenever budget remains (time != 0) — NOT only after a timeout
+  //   - starts FROM the accepted solution (tmpGraph ← *graph): same
+  //     sameChannels / pattern / types / crossNic — no forced sameChannels=0
+  //   - locks minChannels = the solution's channel count (post-dup)
+  //   - climb start re-derived from the solution's post-dup speed
+  //     ("while speedArray[speedIndex] > graph->bwInter … speedIndex++")
+  //   - three-way pattern branch: RING raises bwIntra+bwInter together;
+  //     NVLS raises bwInter only with channels locked; tree-family raises
+  //     bwIntra only. Our engine models ONE search speed (speedIntra ==
+  //     speedInter), so the RING arm is exact and the NVLS/tree arms are
+  //     structurally present but degenerate — see ledger #17.
   // =========================================================================
 
-  if (bestResult && bestResult.time !== -1 && si > 0) {
-    log.emit(
-      'ringSearch',
-      'Phase 2: Optimizing — trying higher bandwidths',
-      `Current solution: ${bestResult.nChannels}ch x ${bestResult.speedIntra}`,
-      'search.cc:1192',
-    )
+  if (bestResult && bestResult.nChannels > 0 && bestResult.time !== 0 && acceptedParams) {
+    // Re-derive the climb start from the (post-dup) solution speed.
+    let climbSi = 0
+    while (climbSi < speedArray.length - 1 && speedArray[climbSi] > bestResult.speedIntra) climbSi++
+    const lockedMinChannels = bestResult.nChannels // tmpGraph.minChannels = graph->nChannels
 
-    // Try increasing speed from the current solution
-    for (let optSi = si - 1; optSi >= speedIndex; optSi--) {
+    if (climbSi - 1 >= speedIndex) {
+      log.emit(
+        'ringSearch',
+        'Phase 2: climb — try to raise bandwidth from the accepted solution',
+        `Locked: ≥${lockedMinChannels} channels, sameChannels=${acceptedParams.sameChannels}; ` +
+          `climbing ${speedArray[climbSi]} → ${speedArray[speedIndex]}`,
+        'search.cc:1255-1283',
+      )
+      tracer?.push({
+        kind: 'phase',
+        label: 'Phase 2 — climb',
+        detail: `Start from the solution (${lockedMinChannels}ch @ ${bestResult.speedIntra}) and climb the speed ladder back up`,
+        sourceRef: 'search.cc:1255-1283',
+      })
+    }
+
+    for (let optSi = climbSi - 1; optSi >= speedIndex; optSi--) {
       const optSpeed = speedArray[optSi]
 
       const state: SearchState = {
@@ -1443,58 +1475,56 @@ export function ncclTopoCompute(
         timedOut: false,
         intelOverheadPaths,
       }
-
-      // Initialize remaining bandwidth
       initRemainingBw(state, system)
 
+      // Three-way branch (search.cc:1267-1283). Single-speed model: the RING
+      // arm (raise both bws) is exact; NVLS/tree arms degenerate to it.
       const nChannels: number =
-        system.inter && patternNum === NCCL_TOPO_PATTERN_RING
+        system.inter && acceptedParams.pattern === NCCL_TOPO_PATTERN_RING
           ? searchForChannelsInter(
-              system, gpus, optSpeed, maxChannels, 0,
-              bestResult.typeIntra, bestResult.typeInter, crossNic === 2 ? 0 : crossNic, state,
+              system, gpus, optSpeed, maxChannels, acceptedParams.sameChannels,
+              bestResult.typeIntra, bestResult.typeInter, acceptedParams.crossNic, state,
             )
           : searchForChannels(
               system,
               gpus,
-              patternNum,
+              acceptedParams.pattern,
               optSpeed,
               maxChannels,
-              minChannels,
-              0, // sameChannels=0 during optimization
+              lockedMinChannels, // channel floor locked to the solution
+              acceptedParams.sameChannels,
               bestResult.typeIntra,
               bestResult.typeInter,
-              crossNic === 2 ? 0 : crossNic,
+              acceptedParams.crossNic,
               state,
             )
 
       globalIterations = state.globalIterations
 
-      if (nChannels >= minChannels) {
-        const newTotalBw = optSpeed * nChannels
-        const oldTotalBw = bestResult.speedIntra * bestResult.nChannels
+      const oldTotalBw = bestResult.speedIntra * bestResult.nChannels
+      const kept = nChannels >= lockedMinChannels && optSpeed * nChannels > oldTotalBw
+      tracer?.push({ kind: 'improve', fromSpeed: bestResult.speedIntra, toSpeed: optSpeed, kept })
 
-        if (newTotalBw > oldTotalBw) {
-          log.emit(
-            'ringSearch',
-            `Phase 2: Improved to ${nChannels}ch x ${optSpeed} = ${newTotalBw} (was ${oldTotalBw})`,
-            'Found higher bandwidth solution',
-            'search.cc:1210',
-            [],
-            { nChannels, speed: optSpeed, newTotalBw, oldTotalBw },
-          )
-
-          bestResult = {
-            nChannels,
-            channels: state.channels,
-            speedIntra: optSpeed,
-            speedInter: system.inter ? optSpeed : 0,
-            typeIntra: bestResult.typeIntra,
-            typeInter: bestResult.typeInter,
-            time: state.timedOut ? 0 : -1,
-          }
-          acceptedParams = { speed: optSpeed, sameChannels: 0, pattern: patternNum }
-          dupInfo = null
+      if (kept) {
+        log.emit(
+          'ringSearch',
+          `Phase 2: improved to ${nChannels}ch x ${optSpeed} = ${optSpeed * nChannels} (was ${oldTotalBw})`,
+          'Higher speed sustained the locked channel count',
+          'search.cc:1267-1283',
+          [],
+          { nChannels, speed: optSpeed, newTotalBw: optSpeed * nChannels, oldTotalBw },
+        )
+        bestResult = {
+          nChannels,
+          channels: state.channels,
+          speedIntra: optSpeed,
+          speedInter: system.inter ? optSpeed : 0,
+          typeIntra: bestResult.typeIntra,
+          typeInter: bestResult.typeInter,
+          time: state.timedOut ? 0 : -1,
         }
+        acceptedParams = { ...acceptedParams, speed: optSpeed }
+        dupInfo = null
       }
 
       if (globalIterations > SEARCH_GLOBAL_TIMEOUT) break
@@ -1537,6 +1567,15 @@ export function ncclTopoCompute(
   // ---------------------------------------------------------------------------
   if (tracer && acceptedParams) {
     tracer.push({
+      kind: 'accepted',
+      speed: acceptedParams.speed,
+      sameChannels: acceptedParams.sameChannels,
+      typeIntra: bestResult.typeIntra,
+      typeInter: bestResult.typeInter,
+      crossNic: acceptedParams.crossNic,
+      nChannels: dupInfo ? dupInfo.fromChannels : bestResult.nChannels,
+    })
+    tracer.push({
       kind: 'phase',
       label: 'Construction replay',
       detail:
@@ -1558,7 +1597,7 @@ export function ncclTopoCompute(
     if (system.inter && acceptedParams.pattern === NCCL_TOPO_PATTERN_RING) {
       searchForChannelsInter(
         system, gpus, acceptedParams.speed, maxChannels, acceptedParams.sameChannels,
-        bestResult.typeIntra, bestResult.typeInter, crossNic === 2 ? 0 : crossNic,
+        bestResult.typeIntra, bestResult.typeInter, acceptedParams.crossNic,
         replayState, tracer,
       )
     } else {
@@ -1572,7 +1611,7 @@ export function ncclTopoCompute(
         acceptedParams.sameChannels,
         bestResult.typeIntra,
         bestResult.typeInter,
-        crossNic === 2 ? 0 : crossNic,
+        acceptedParams.crossNic,
         replayState,
         tracer,
       )

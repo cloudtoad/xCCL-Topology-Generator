@@ -25,6 +25,9 @@ export type RingBuildEvent =
   | { kind: 'phase'; label: string; detail: string; sourceRef: string }
   | { kind: 'speed'; speed: number; detail: string }
   | { kind: 'relax'; action: string; reason: string; sourceRef: string }
+  | { kind: 'attempt'; n: number; speed: number; sameChannels: number; pattern: number; typeIntra: number; typeInter: number; crossNic: number }
+  | { kind: 'accepted'; speed: number; sameChannels: number; typeIntra: number; typeInter: number; crossNic: number; nChannels: number }
+  | { kind: 'improve'; fromSpeed: number; toSpeed: number; kept: boolean }
   | { kind: 'channel-start'; channel: number; startGpu: string; speed: number; reused: boolean; net?: string }
   | { kind: 'consider'; channel: number; from: string; candidates: CandidateScore[]; chosen: string }
   | { kind: 'hop'; channel: number; from: string; to: string; before: number; after: number }
