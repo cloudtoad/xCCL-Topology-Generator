@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 
-export type AtlasGraphKind = 'l2-cfg' | 'l2-dfd' | 'lineage'
+export type AtlasGraphKind = 'l0-dfd' | 'l2-cfg' | 'l2-dfd' | 'lineage'
 
 interface AtlasState {
   graph: AtlasGraphKind
@@ -15,7 +15,7 @@ interface AtlasState {
 }
 
 export const useAtlasStore = create<AtlasState>((set) => ({
-  graph: 'l2-cfg',
+  graph: 'l0-dfd',
   selected: null,
   lineageFocus: null,
 

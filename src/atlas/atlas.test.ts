@@ -4,6 +4,7 @@
 // if the keys line up.
 import { describe, test, expect } from 'vitest'
 import { ATLAS, ATLAS_BY_MID, mid } from './ids'
+import { L0_DFD } from './graphs/l0-dfd'
 import { L2_CFG } from './graphs/l2-cfg'
 import { L2_DFD } from './graphs/l2-dfd'
 import { runInit } from '../engine/init'
@@ -35,16 +36,36 @@ describe('atlas registry integrity', () => {
   const single = runInit(dgxH100Config, createDefaultEnvConfig())
   const singleLineage = buildLineage(dgxH100Config, createDefaultEnvConfig(), undefined, single)
 
-  test('every registered atlas node id used in L2 graphs resolves via ATLAS_BY_MID', () => {
-    for (const src of [L2_CFG, L2_DFD]) {
+  test('every registered atlas node id used in the graphs resolves via ATLAS_BY_MID', () => {
+    const registeredPrefixes = [mid('S60.').slice(0, 4), mid('L0.').slice(0, 3)]
+    for (const src of [L0_DFD, L2_CFG, L2_DFD]) {
       for (const id of nodeIds(src)) {
         // plain-structural nodes (decision diamonds like FOUND/EXH) are allowed;
-        // anything with the S60 prefix must be registered
-        if (id.startsWith(mid('S60.').slice(0, 4))) {
+        // anything with a registered prefix must be in the registry
+        if (registeredPrefixes.some((p) => id.startsWith(p))) {
           expect(ATLAS_BY_MID[id], `unregistered graph node ${id}`).toBeDefined()
         }
       }
     }
+  })
+
+  test('every L0 registry node appears in the L0 graph — the map is complete', () => {
+    const used = new Set(nodeIds(L0_DFD))
+    for (const e of Object.values(ATLAS)) {
+      if (e.id.startsWith('L0.') || e.id === 'L0.done') {
+        expect(used.has(mid(e.id)), `${e.id} registered but not drawn`).toBe(true)
+      }
+    }
+  })
+
+  test('drill links point at real atlas graphs', () => {
+    const graphs = ['l0-dfd', 'l2-cfg', 'l2-dfd']
+    for (const e of Object.values(ATLAS)) {
+      if (e.drill) expect(graphs, `${e.id} drill`).toContain(e.drill.graph)
+    }
+    // the atlas links to itself in both directions: L0 → L2 and L2 → L0
+    expect(ATLAS['L0.p6'].drill?.graph).toBe('l2-cfg')
+    expect(ATLAS['S60.entry'].drill?.graph).toBe('l0-dfd')
   })
 
   test('registry lineageIds resolve in at least one scenario lineage', () => {

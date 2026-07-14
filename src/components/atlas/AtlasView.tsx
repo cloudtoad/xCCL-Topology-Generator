@@ -16,12 +16,14 @@ import { useUIStore } from '../../store/ui-store'
 import { MermaidPane } from './MermaidPane'
 import { ATLAS, ATLAS_BY_MID, mid } from '../../atlas/ids'
 import type { AtlasEntry } from '../../atlas/ids'
+import { L0_DFD, L0_DFD_TITLE } from '../../atlas/graphs/l0-dfd'
 import { L2_CFG, L2_CFG_TITLE } from '../../atlas/graphs/l2-cfg'
 import { L2_DFD, L2_DFD_TITLE } from '../../atlas/graphs/l2-dfd'
 import { toMermaid } from '../../engine/lineage'
 import { CURRICULUM } from '../../walkthrough/curriculum'
 
 const GRAPHS = [
+  { key: 'l0-dfd' as const, label: 'L0 · Init pipeline' },
   { key: 'l2-cfg' as const, label: 'L2 · Control flow' },
   { key: 'l2-dfd' as const, label: 'L2 · Data flow' },
   { key: 'lineage' as const, label: 'Lineage map' },
@@ -44,6 +46,7 @@ function DetailCard({ entry }: { entry: AtlasEntry }) {
   const setInfoPanel = useUIStore((s) => s.setInfoPanel)
   const setBeat = useWalkthroughStore((s) => s.setBeat)
   const focusLineage = useAtlasStore((s) => s.focusLineage)
+  const setGraph = useAtlasStore((s) => s.setGraph)
 
   const lineageNode = entry.lineageId ? lineage?.nodes.get(entry.lineageId) : null
 
@@ -71,6 +74,15 @@ function DetailCard({ entry }: { entry: AtlasEntry }) {
       <div className="text-[9px] text-gray-600 font-mono">{entry.sourceRef}</div>
 
       <div className="flex flex-wrap gap-1.5 pt-1">
+        {entry.drill && (
+          <button
+            title="atlas-drill"
+            onClick={() => setGraph(entry.drill!.graph)}
+            className="px-2 py-0.5 text-[9px] border border-neon-magenta/40 rounded text-neon-magenta hover:bg-neon-magenta/10"
+          >
+            {entry.drill.label}
+          </button>
+        )}
         {entry.lineageId && lineageNode && (
           <button
             title="atlas-jump-lineage"
@@ -124,6 +136,7 @@ export function AtlasView() {
   const lineage = useTopologyStore((s) => s.lineage)
 
   const source = useMemo(() => {
+    if (graph === 'l0-dfd') return L0_DFD
     if (graph === 'l2-cfg') return L2_CFG
     if (graph === 'l2-dfd') return L2_DFD
     if (!lineage) return 'flowchart LR\n  none["no lineage loaded"]'
@@ -131,7 +144,8 @@ export function AtlasView() {
   }, [graph, lineage, lineageFocus])
 
   const title =
-    graph === 'l2-cfg' ? L2_CFG_TITLE
+    graph === 'l0-dfd' ? L0_DFD_TITLE
+    : graph === 'l2-cfg' ? L2_CFG_TITLE
     : graph === 'l2-dfd' ? L2_DFD_TITLE
     : lineageFocus
       ? `Lineage · ancestry of ${lineageFocus}`

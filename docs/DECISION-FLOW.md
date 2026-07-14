@@ -10,7 +10,10 @@ communicator. Old-school systems-analysis style: numbered stations, labeled GOTO
 
 *Rendered companion: [diagrams/L0-SSA.png](diagrams/L0-SSA.png) — the L0 stage as a
 Structured Systems Analysis chart (numbered processes, data stores, external entities,
-labeled flows); source in [diagrams/L0-SSA.mmd](diagrams/L0-SSA.mmd).*
+labeled flows); source in [diagrams/L0-SSA.mmd](diagrams/L0-SSA.mmd). An interactive
+version lives in the app's **Atlas** view (the default graph): every process and store
+is clickable with its source cite, live value where lineage-backed, and jump buttons —
+station 6.0 drills straight into the L2 ladder-machine graphs below.*
 
 ## The big picture
 
